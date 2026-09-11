@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>证书数据接入「个人工作台」整合方案</title>
+<style>
+  :root {
+    --paper: #f6f1e7;
+    --paper-2: #efe7d8;
+    --ink: #2b2b2b;
+    --stone: #6b5d4f;
+    --line: #ddd2c0;
+    --cinnabar: #b0392b;
+    --cinnabar-soft: #f3e2dd;
+    --jade: #2f7d5b;
+    --shadow: rgba(60, 45, 30, 0.10);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.75;
+    font-size: 15px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 28px 80px; }
+  header.doc-head {
+    border-bottom: 2px solid var(--cinnabar);
+    padding-bottom: 18px; margin-bottom: 8px;
+  }
+  .doc-head h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: 1px; }
+  .doc-meta { color: var(--stone); font-size: 13px; }
+  .doc-meta span { margin-right: 18px; }
+  .status-pill {
+    display: inline-block; background: var(--cinnabar-soft); color: var(--cinnabar);
+    border: 1px solid var(--cinnabar); border-radius: 12px; padding: 1px 12px; font-size: 12px; font-weight: 600;
+  }
+  section { margin-top: 36px; }
+  h2 {
+    font-size: 19px; border-left: 4px solid var(--cinnabar); padding-left: 12px;
+    margin: 0 0 14px; color: var(--ink);
+  }
+  h3 { font-size: 15px; color: var(--stone); margin: 20px 0 8px; }
+  p { margin: 8px 0; }
+  .lead { background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; }
+  .callout {
+    background: #fbf6ec; border: 1px solid var(--cinnabar); border-left: 5px solid var(--cinnabar);
+    border-radius: 6px; padding: 14px 18px; margin: 14px 0;
+  }
+  .callout b { color: var(--cinnabar); }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--paper-2); color: var(--stone); font-weight: 600; }
+  tbody tr:nth-child(even) { background: #faf6ee; }
+  code { background: var(--paper-2); padding: 1px 6px; border-radius: 4px; font-size: 13px; color: var(--cinnabar); }
+  .tag { display:inline-block; background: var(--cinnabar-soft); color: var(--cinnabar); border-radius: 4px; padding: 0 8px; font-size: 12px; margin-right: 6px; }
+  .tag.jade { background: #e3f1ea; color: var(--jade); }
+  ol, ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  .phase { border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin: 10px 0; background: #fbf6ec; }
+  .phase b { color: var(--cinnabar); }
+  .foot { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--stone); font-size: 13px; }
+  .decision-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .decision { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fbf6ec; }
+  .decision h4 { margin: 0 0 8px; font-size: 14px; color: var(--cinnabar); }
+  .decision p { font-size: 13px; margin: 4px 0; }
+  @media (max-width: 720px) { .decision-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="doc-head">
+    <h1>证书数据接入「个人工作台」整合方案</h1>
+    <div class="doc-meta">
+      <span>来源文件：2026中国故事听我说-证书打包分表（按收件机构）副本.xlsx</span>
+      <span>日期：2026-09-11</span>
+      <span>状态：<span class="status-pill">方案已定稿 · 待实施</span></span>
+    </div>
+  </header>
+
+  <section>
+    <div class="callout">
+      <b>一句话结论：</b>证书数据应作为工作台里<b>新增的一个独立维度（certificates 事实表）</b>接入，用外键反向关联已有的「项目 / 机构 / 选手」，而不是把证书字段塞进现有模型。这样既满足"项目以后要统计这些数据"，又不污染通用的媒体艺术项目/选手结构。
+    </div>
+  </section>
+
+  <section>
+    <h2>一、决定方案走向的关键约束（已核实）</h2>
+    <p>核对后端持久化链路后发现一个必须正视的事实：</p>
+    <ul>
+      <li>前端 <code>dataService.save()</code> → <code>POST /api/data/save</code> → <code>db.save_all_data(data)</code>。</li>
+      <li><code>save_all_data</code> <b>只持久化一张写死的白名单表</b>（projects / organizations / players / finances / config / materialTypes / knowledge / auditLogs …）。</li>
+      <li><code>load_all_data</code> 是<b>从 SQLite 表读回</b>，不是读 JSON；<code>workbench_data.json</code> 只在"导出"时才写。</li>
+    </ul>
+    <div class="callout">
+      <b>推论：</b>若只新建前端 <code>certificates</code> store，证书数据在下次保存/加载时会被<b>静默丢弃</b>——后端没有 <code>certificates</code> 表、也没把它纳入 load/save 白名单。因此本次接入<b>必须改后端</b>（新建表 + 接线），不能零后端改动。做法完全照搬 <code>players</code> / <code>finances</code> 已有的接入模式，风险可控。
+    </div>
+  </section>
+
+  <section>
+    <h2>二、核心设计：证书是新增维度，不污染现有模型</h2>
+    <p>证书事实表（一行 = 一张证书 = 一个选手）建议字段如下，以「证书编号」为自然主键：</p>
+    <table>
+      <thead>
+        <tr><th>字段</th><th>来源列</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>certNumber</code></td><td>证书编号</td><td><b>自然主键</b>（如 <code>【川】CNRCSOV2026xxxx</code>），导入按它去重</td></tr>
+        <tr><td><code>projectId</code></td><td>（本赛事建一条项目记录）</td><td>关联「2026 中国故事听我说」</td></tr>
+        <tr><td><code>orgName</code></td><td>选送机构(校区) / 收件机构</td><td>始终保留明文，便于核对</td></tr>
+        <tr><td><code>orgId</code></td><td>同上</td><td>按机构名匹配现有 organizations，匹配不到则留空</td></tr>
+        <tr><td><code>playerName</code></td><td>选手姓名</td><td></td></tr>
+        <tr><td><code>playerId</code></td><td>同上</td><td>按「姓名+机构」软关联 players（不强制生成）</td></tr>
+        <tr><td><code>group</code></td><td>组别</td><td>对应现有 player.<code>category</code></td></tr>
+        <tr><td><code>award</code></td><td>奖项</td><td>特金奖 / 金奖 / 银奖 / 铜奖 / 退赛</td></tr>
+        <tr><td><code>round</code></td><td>赛事阶段</td><td>省赛 / 国赛</td></tr>
+        <tr><td><code>workName</code></td><td>作品名称</td><td>缺则 <code>null</code> + <code>missingWorkName=true</code>（约 893 条）</td></tr>
+        <tr><td><code>instructor</code></td><td>指导老师</td><td></td></tr>
+        <tr><td><code>language</code></td><td>语种</td><td></td></tr>
+        <tr><td><code>promotion</code></td><td>晋级情况</td><td></td></tr>
+        <tr><td><code>packed</code></td><td>打包核对</td><td>已打包 / 未打包（人工勾选列，可能不全）</td></tr>
+        <tr><td><code>sourceSheet</code> / <code>importId</code></td><td>—</td><td>溯源：来自哪个分表、哪次导入</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>三、与现有模型的衔接映射</h2>
+    <table>
+      <thead>
+        <tr><th>现有实体</th><th>证书如何衔接</th><th>是否改现有实体</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>projects</code>（13 条）</td><td>本赛事建<b>一条项目记录</b>（type 可加「赛事/语言类」），证书挂 <code>projectId</code>；项目详情展示证书奖项分布</td><td>否（仅新增一条记录 + 详情页加证书指标卡）</td></tr>
+        <tr><td><code>organizations</code>（10 条）</td><td>102 个收件机构/校区大概率超出这 10 条；按名匹配，匹配不到<b>不自动建机构</b>（避免污染），只存 <code>orgName</code></td><td>否（机构详情加「关联证书数 / 奖项构成」指标）</td></tr>
+        <tr><td><code>players</code>（15 条）</td><td>软关联（姓名+机构），不强制生成 player</td><td>否（深化阶段再决定是否 upsert）</td></tr>
+        <tr><td><code>config</code> / <code>materialTypes</code></td><td>复用现有 <code>projectTypes</code>、<code>statusList</code> 等字典；奖项/组别可沉淀为新下拉选项</td><td>可选：奖项、组别加进 config 字典</td></tr>
+        <tr><td><code>auditLogs</code></td><td>每次导入写一条审计（action=import_certificates）</td><td>否（复用现有审计）</td></tr>
+        <tr><td><code>chart.js ^4.4.1</code></td><td><b>已是依赖</b>，证书统计图表直接复用，零新增前端依赖</td><td>—</td></tr>
+        <tr><td>xlsx 解析</td><td><b>不是依赖</b>，需新增（前端 SheetJS）</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>四、导入管线设计</h2>
+    <ol>
+      <li><b>解析：</b>遍历 102 个机构分表的「逐人明细」区块，UNION 成一张事实表；每个分表名作为 <code>sourceSheet</code> / <code>receivingOrg</code>。</li>
+      <li><b>派生：</b>①总览、②校区统计、④待补清单都<b>由事实表实时计算</b>（与现有 store 里 <code>getProjectStats</code> / <code>getFinanceStats</code> 写法一致），不单独存——改了打包状态，汇总自动跟着变。</li>
+      <li><b>去重：</b>以 <code>certNumber</code> 为唯一键，重复则跳过并标记。</li>
+      <li><b>质量标记：</b>缺作品名 → <code>missingWorkName</code>；退赛 → <code>award='退赛'</code>（统计时单独处理）；打包列空 → <code>packed=null</code>。</li>
+      <li><b>溯源：</b>每次导入写 <code>certificateImports</code> 元数据（源文件名、时间、行数、去重数、缺作品名数）。首次全量导入前确认用「副本.xlsx」还是干净母表。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>五、统计与展示落点</h2>
+    <ul>
+      <li><b>新增 CertificatesView.vue</b>（路由 <code>/certificates</code> + 侧边栏「证书管理」）：奖项分布（特金/金/银/铜/退赛）柱状图、省赛 vs 国赛饼图、按机构 TOP 榜、语种分布、打包进度（已打包/未打包/待补作品名）。</li>
+      <li><b>项目详情页：</b>对本赛事项目，加「证书奖项构成」指标卡（呼应"项目以后要统计这些数据"）。</li>
+      <li><b>机构详情页：</b>加「关联证书数 + 奖项构成」指标。</li>
+      <li>均用 <code>chart.js</code>（已有）绘制。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>六、落地分期</h2>
+    <div class="phase"><b>Phase 0｜后端持久化（必须）</b>：<code>db.py</code> 新增 <code>certificates</code> 表 → <code>_create_tables</code> 建表 → 写 <code>_save_certificates</code> / <code>get_all</code> → 在 <code>load_all_data</code> 与 <code>save_all_data</code> 的 sections 各加一行。否则数据存不住。</div>
+    <div class="phase"><b>Phase 1｜导入</b>：<code>certificateImport.js</code>（xlsx 解析 + 归一化 + 预览 + 去重 + 质量标记）+ 导入页/弹窗。</div>
+    <div class="phase"><b>Phase 2｜统计展示</b>：<code>CertificatesView</code> + 图表 + 项目/机构详情证书指标联动。</div>
+    <div class="phase"><b>Phase 3（可选）</b>：选手 upsert，证书硬关联 <code>playerId</code>。</div>
+  </section>
+
+  <section>
+    <h2>七、必须正视的数据质量风险</h2>
+    <ol>
+      <li><b>约 893 条缺作品名</b>（④待补清单）——导入时标记，不阻断。</li>
+      <li><b>退赛行混入奖项</b>——图表需单独归类。</li>
+      <li><b>③号表缺失</b>（①→②→④ 跳号）——不要依赖它。</li>
+      <li><b>收件机构 vs 选送机构(校区) 口径混用</b>——需明确映射规则（建议：以「选送机构(校区)」为主键关联，<code>sourceSheet</code> 记录收件机构）。</li>
+      <li><b>打包核对/已打包是人工勾选列</b>——可能不完整，UI 要允许后续手动修正。</li>
+      <li><b>源文件是「副本.xlsx」</b>——母表可能与副本不一致，首次全量导入前建议确认用哪份。</li>
+      <li><b>证书编号重复风险</b>——导入按 <code>certNumber</code> 去重，冲突需人工裁决。</li>
+      <li><b>102 机构 vs 现有 10 机构</b>——自动建机构会污染现有数据，建议默认只存 <code>orgName</code>、不匹配则不建。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>八、已确认的方向决策</h2>
+    <div class="decision-grid">
+      <div class="decision">
+        <h4>归属模型</h4>
+        <p><span class="tag">已定</span>独立证书模块 + 建一条项目记录</p>
+        <p>新增独立 certificates 切片，同时把本赛事建为一条 project 记录并用 projectId 关联。证书页能看统计，项目详情也能看证书奖项分布，且不污染通用项目模型。</p>
+      </div>
+      <div class="decision">
+        <h4>选手关联</h4>
+        <p><span class="tag">已定</span>软关联，不自动建选手</p>
+        <p>证书独立成表，按「姓名+选送机构」与 players 做软匹配展示，匹配不到就只存明文。低风险，先把统计跑通。</p>
+      </div>
+      <div class="decision">
+        <h4>导入方式</h4>
+        <p><span class="tag jade">已定</span>应用内上传解析</p>
+        <p>前端加 SheetJS(xlsx) 依赖，做「上传→解析→预览→确认导入」闭环。可重复、自助操作，后续更新副本文件能再导。</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">
+    本方案依据现有代码核实（stores / dataService / db.py 持久化白名单 / package.json 依赖 / router），未改动任何代码。实施前请确认源文件（副本.xlsx 或干净母表）。
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "media-art-workbench-electron",
+  "version": "1.0.0",
+  "description": "Electron main process for Media Art Workbench",
+  "main": "main.cjs",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}

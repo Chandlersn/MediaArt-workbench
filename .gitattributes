@@ -1,0 +1,18 @@
+# 强制源码以 LF 存储与检出，保证跨平台一致（项目 eslint 要求 linebreak-style: unix）
+* text=auto eol=lf
+
+# Windows 批处理 / PowerShell 脚本需 CRLF 才能正常执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资源不转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

@@ -1,0 +1,58 @@
+# 依赖目录
+node_modules/
+
+# 构建输出
+dist/
+build/
+
+# 数据目录
+data/
+
+# Electron
+electron/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.py[cod]
+*$py.class
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+*.bak
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 打包文件
+*.zip
+*.rar
+*.7z
+
+# 文档
+*.md
+!README.md
+
+# 资源文件
+assets/
+resources/
+MediaArt_Archives/
+templates/
+
+# 其他
+.trae/
+server/
+server.py

@@ -1,0 +1,1361 @@
+openapi: 3.0.3
+info:
+  title: 媒体艺术展览工作台 API
+  description: |
+    媒体艺术展览工作台的后端 API 接口文档。
+
+    ## 认证说明
+    大部分接口需要 JWT Token 认证。请在请求头中添加：
+    ```
+    Authorization: Bearer <your_token>
+    ```
+
+    ## 权限说明
+    - **admin**: 管理员，拥有所有权限
+    - **editor**: 编辑者，可以创建、更新数据
+    - **viewer**: 查看者，只能查看数据
+
+    ## 错误码说明
+    - `MISSING_TOKEN`: 缺少认证信息
+    - `INVALID_TOKEN_FORMAT`: 认证格式错误
+    - `INVALID_OR_EXPIRED_TOKEN`: Token 无效或已过期
+    - `FORBIDDEN`: 权限不足
+
+  version: 1.0.0
+  contact:
+    name: API 支持
+    email: support@mediaart-workbench.com
+
+servers:
+  - url: http://localhost:8080
+    description: 本地开发服务器
+
+tags:
+  - name: 认证
+    description: 用户认证相关接口
+  - name: 数据管理
+    description: 数据存储和备份相关接口
+  - name: 文件管理
+    description: 文件上传、下载、删除相关接口
+  - name: 归档管理
+    description: 归档文件夹管理相关接口
+  - name: 配置管理
+    description: 系统配置相关接口
+  - name: 系统清理
+    description: 临时文件清理相关接口
+
+paths:
+  # ==================== 认证接口 ====================
+  /api/auth/register:
+    post:
+      tags:
+        - 认证
+      summary: 用户注册
+      description: 注册新用户账号
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                  description: 用户名
+                  example: admin
+                password:
+                  type: string
+                  description: 密码（Base64 编码）
+                  example: YWRtaW4xMjM=
+                role:
+                  type: string
+                  description: 用户角色
+                  enum: [admin, editor, viewer]
+                  default: viewer
+                  example: editor
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: 注册成功
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: 请求参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/login:
+    post:
+      tags:
+        - 认证
+      summary: 用户登录
+      description: 用户登录获取 Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                  description: 用户名
+                  example: admin
+                password:
+                  type: string
+                  description: 密码（Base64 编码）
+                  example: YWRtaW4xMjM=
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: 登录成功
+                  user:
+                    $ref: '#/components/schemas/User'
+                  access_token:
+                    type: string
+                    description: 访问 Token
+                  refresh_token:
+                    type: string
+                    description: 刷新 Token
+                  expires_in:
+                    type: integer
+                    description: Token 过期时间（秒）
+                    example: 3600
+        '401':
+          description: 用户名或密码错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/verify:
+    get:
+      tags:
+        - 认证
+      summary: 验证 Token
+      description: 验证 JWT Token 是否有效
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Token 有效
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Token 有效
+                  user:
+                    type: object
+                    properties:
+                      user_id:
+                        type: string
+                      username:
+                        type: string
+                      role:
+                        type: string
+                  expires_at:
+                    type: integer
+                    description: Token 过期时间戳
+        '401':
+          description: Token 无效或已过期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/refresh:
+    post:
+      tags:
+        - 认证
+      summary: 刷新 Token
+      description: 使用 refresh_token 获取新的 access_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+                  description: 刷新 Token
+      responses:
+        '200':
+          description: Token 刷新成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Token 刷新成功
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+                  expires_in:
+                    type: integer
+        '401':
+          description: 刷新 Token 无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/permissions:
+    get:
+      tags:
+        - 认证
+      summary: 获取权限信息
+      description: 获取当前用户的权限信息
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 成功获取权限信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  role:
+                    type: string
+                    example: admin
+                  role_display_name:
+                    type: string
+                    example: 管理员
+                  permissions:
+                    type: array
+                    items:
+                      type: string
+                    example: ["create", "read", "update", "delete", "manage_config"]
+                  role_level:
+                    type: integer
+                    example: 3
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/migrate-password:
+    post:
+      tags:
+        - 认证
+      summary: 密码迁移
+      description: 迁移旧用户密码到 bcrypt 加密
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+                - newPassword
+              properties:
+                userId:
+                  type: string
+                  description: 用户ID
+                newPassword:
+                  type: string
+                  description: 新密码（Base64 编码）
+      responses:
+        '200':
+          description: 密码迁移成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: 密码迁移成功
+
+  /api/auth/check-password:
+    post:
+      tags:
+        - 认证
+      summary: 检查密码状态
+      description: 检查用户密码是否已加密
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+              properties:
+                userId:
+                  type: string
+                  description: 用户ID
+      responses:
+        '200':
+          description: 成功获取密码状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  passwordHashed:
+                    type: boolean
+                    example: true
+
+  # ==================== 数据管理接口 ====================
+  /api/data/load:
+    get:
+      tags:
+        - 数据管理
+      summary: 加载数据
+      description: 加载工作台数据
+      responses:
+        '200':
+          description: 成功加载数据
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    description: 工作台数据
+                  exists:
+                    type: boolean
+                    description: 数据文件是否存在
+
+  /api/data/save:
+    post:
+      tags:
+        - 数据管理
+      summary: 保存数据
+      description: 保存工作台数据（需要 editor 或更高权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 工作台数据
+              properties:
+                projects:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Project'
+                players:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Player'
+                organizations:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Organization'
+                finances:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Finance'
+                users:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/User'
+      responses:
+        '200':
+          description: 数据保存成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: 数据保存成功
+        '400':
+          description: 数据校验失败
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: 数据校验失败
+                  errors:
+                    type: object
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 权限不足
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/data/backup:
+    post:
+      tags:
+        - 数据管理
+      summary: 创建备份
+      description: 创建数据备份（需要 editor 或更高权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 要备份的数据
+      responses:
+        '200':
+          description: 备份创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: 备份创建成功
+                  backup_name:
+                    type: string
+                    example: "2026-03-06_17-20-00"
+
+  /api/data/list-backups:
+    get:
+      tags:
+        - 数据管理
+      summary: 列出备份
+      description: 列出所有数据备份
+      responses:
+        '200':
+          description: 成功获取备份列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  backups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          example: "2026-03-06_17-20-00"
+                        date:
+                          type: string
+                          example: "2026-03-06"
+                        time:
+                          type: string
+                          example: "17:20:00"
+                        has_data:
+                          type: boolean
+                          example: true
+
+  /api/data/restore:
+    post:
+      tags:
+        - 数据管理
+      summary: 恢复备份
+      description: 从备份恢复数据（需要 admin 权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - backup_name
+              properties:
+                backup_name:
+                  type: string
+                  description: 备份名称
+                  example: "2026-03-06_17-20-00"
+      responses:
+        '200':
+          description: 备份恢复成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: 备份恢复成功
+                  data:
+                    type: object
+                    description: 恢复的数据
+        '404':
+          description: 备份不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== 文件管理接口 ====================
+  /api/list-files:
+    get:
+      tags:
+        - 文件管理
+      summary: 列出文件
+      description: 列出资源目录中的文件
+      parameters:
+        - name: folder
+          in: query
+          description: 文件夹路径
+          required: false
+          schema:
+            type: string
+            example: "images"
+      responses:
+        '200':
+          description: 成功获取文件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          example: "image.jpg"
+                        path:
+                          type: string
+                          example: "images/image.jpg"
+                        size:
+                          type: integer
+                          example: 1024
+                        modifiedTime:
+                          type: number
+                          example: 1709727600
+                        type:
+                          type: string
+                          example: "file"
+
+  /api/open-file:
+    get:
+      tags:
+        - 文件管理
+      summary: 打开文件
+      description: 打开指定文件（调用系统默认程序）
+      parameters:
+        - name: path
+          in: query
+          description: 文件路径
+          required: true
+          schema:
+            type: string
+            example: "images/sample.jpg"
+      responses:
+        '200':
+          description: 文件打开成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Opened: images/sample.jpg"
+        '404':
+          description: 文件不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/upload:
+    post:
+      tags:
+        - 文件管理
+      summary: 上传文件
+      description: 上传资源文件到 resources 目录（需要 editor 或更高权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 要上传的文件
+                folder:
+                  type: string
+                  description: 目标文件夹
+                  example: "images"
+      responses:
+        '200':
+          description: 文件上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "File uploaded successfully"
+                  path:
+                    type: string
+                    example: "images/uploaded_file.jpg"
+
+  /api/delete-file:
+    delete:
+      tags:
+        - 文件管理
+      summary: 删除文件
+      description: 删除指定文件（需要 admin 权限）
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: path
+          in: query
+          description: 文件路径
+          required: true
+          schema:
+            type: string
+            example: "images/sample.jpg"
+      responses:
+        '200':
+          description: 文件删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "File deleted"
+        '404':
+          description: 文件不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/create-folder:
+    post:
+      tags:
+        - 文件管理
+      summary: 创建文件夹
+      description: 创建新文件夹（需要 editor 或更高权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                  description: 文件夹路径
+                  example: "02_选手档案/张三/证件照"
+      responses:
+        '200':
+          description: 文件夹创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Created: 02_选手档案/张三/证件照"
+                  path:
+                    type: string
+                    example: "D:\\MediaArt_Archives\\02_选手档案\\张三\\证件照"
+
+  /api/rename-folder:
+    post:
+      tags:
+        - 文件管理
+      summary: 重命名文件夹
+      description: 重命名文件夹（需要 editor 或更高权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - old_path
+                - new_name
+              properties:
+                old_path:
+                  type: string
+                  description: 原文件夹路径
+                  example: "02_选手档案/张三"
+                new_name:
+                  type: string
+                  description: 新文件夹名称
+                  example: "李四"
+      responses:
+        '200':
+          description: 文件夹重命名成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Renamed to: 李四"
+                  old_path:
+                    type: string
+                    example: "02_选手档案/张三"
+                  new_path:
+                    type: string
+                    example: "02_选手档案/李四"
+                  new_name:
+                    type: string
+                    example: "李四"
+
+  # ==================== 归档管理接口 ====================
+  /api/list-archives:
+    get:
+      tags:
+        - 归档管理
+      summary: 列出归档
+      description: 列出归档目录中的文件和文件夹
+      parameters:
+        - name: folder
+          in: query
+          description: 文件夹路径
+          required: false
+          schema:
+            type: string
+            example: "02_选手档案"
+      responses:
+        '200':
+          description: 成功获取归档列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      example: "张三"
+                    type:
+                      type: string
+                      enum: [folder, file]
+                      example: "folder"
+                    path:
+                      type: string
+                      example: "02_选手档案/张三"
+                    size:
+                      type: integer
+                      example: 1024
+                    modified:
+                      type: number
+                      example: 1709727600
+
+  /api/open-archive:
+    get:
+      tags:
+        - 归档管理
+      summary: 打开归档文件
+      description: 打开归档目录中的文件
+      parameters:
+        - name: path
+          in: query
+          description: 文件路径
+          required: true
+          schema:
+            type: string
+            example: "02_选手档案/张三/证件照/身份证.jpg"
+      responses:
+        '200':
+          description: 文件打开成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Opened: 02_选手档案/张三/证件照/身份证.jpg"
+
+  /api/copy-to-archive:
+    post:
+      tags:
+        - 归档管理
+      summary: 复制到归档
+      description: 将文件复制到归档目录（需要 editor 或更高权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - source
+                - destination
+              properties:
+                source:
+                  type: string
+                  description: 源文件路径
+                  example: "images/sample.jpg"
+                destination:
+                  type: string
+                  description: 目标路径
+                  example: "02_选手档案/张三/证件照/sample.jpg"
+      responses:
+        '200':
+          description: 文件复制成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "File copied to archive"
+                  source:
+                    type: string
+                    example: "images/sample.jpg"
+                  destination:
+                    type: string
+                    example: "02_选手档案/张三/证件照/sample.jpg"
+
+  /api/delete-folder:
+    delete:
+      tags:
+        - 归档管理
+      summary: 删除文件夹
+      description: 删除归档目录中的文件夹（需要 admin 权限）
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: path
+          in: query
+          description: 文件夹路径
+          required: true
+          schema:
+            type: string
+            example: "02_选手档案/张三"
+      responses:
+        '200':
+          description: 文件夹删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Deleted: 02_选手档案/张三"
+
+  /api/count-files:
+    get:
+      tags:
+        - 归档管理
+      summary: 统计文件数量
+      description: 递归统计目录中的文件和文件夹数量
+      parameters:
+        - name: folder
+          in: query
+          description: 文件夹路径
+          required: false
+          schema:
+            type: string
+            example: "02_选手档案"
+      responses:
+        '200':
+          description: 成功获取统计信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  folders:
+                    type: integer
+                    example: 10
+                  files:
+                    type: integer
+                    example: 50
+
+  /api/scan-player-files:
+    get:
+      tags:
+        - 归档管理
+      summary: 扫描选手文件
+      description: 扫描选手归档文件夹，返回已有的资料类型
+      parameters:
+        - name: name
+          in: query
+          description: 选手名称
+          required: true
+          schema:
+            type: string
+            example: "张三"
+      responses:
+        '200':
+          description: 成功扫描选手文件
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  player_name:
+                    type: string
+                    example: "张三"
+                  materials:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          example: "证件照"
+                        name:
+                          type: string
+                          example: "张三_初赛_证件照_20260306.jpg"
+                        folder:
+                          type: string
+                          example: "证件照"
+                        path:
+                          type: string
+                          example: "02_选手档案/张三/证件照/张三_初赛_证件照_20260306.jpg"
+                        size:
+                          type: integer
+                          example: 1024
+                  material_types:
+                    type: array
+                    items:
+                      type: string
+                    example: ["证件照", "身份证", "作品集"]
+
+  # ==================== 配置管理接口 ====================
+  /api/config/archive-path:
+    get:
+      tags:
+        - 配置管理
+      summary: 获取归档路径
+      description: 获取归档目录配置
+      responses:
+        '200':
+          description: 成功获取归档路径
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: "D:\\MediaArt_Archives"
+                  defaultPath:
+                    type: string
+                    example: "D:\\MediaArt_Archives"
+                  isCustom:
+                    type: boolean
+                    example: false
+                  isValid:
+                    type: boolean
+                    example: true
+    post:
+      tags:
+        - 配置管理
+      summary: 设置归档路径
+      description: 设置归档目录路径（需要 admin 权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                  description: 归档目录路径
+                  example: "D:\\Custom_Archives"
+      responses:
+        '200':
+          description: 归档路径设置成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: "D:\\Custom_Archives"
+                  message:
+                    type: string
+                    example: "归档目录已更新"
+
+  /api/config/resources-path:
+    get:
+      tags:
+        - 配置管理
+      summary: 获取资源路径
+      description: 获取资源目录配置
+      responses:
+        '200':
+          description: 成功获取资源路径
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: "D:\\resources"
+                  defaultPath:
+                    type: string
+                    example: "D:\\resources"
+                  isCustom:
+                    type: boolean
+                    example: false
+                  isValid:
+                    type: boolean
+                    example: true
+    post:
+      tags:
+        - 配置管理
+      summary: 设置资源路径
+      description: 设置资源目录路径（需要 admin 权限）
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                  description: 资源目录路径
+                  example: "D:\\Custom_Resources"
+      responses:
+        '200':
+          description: 资源路径设置成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: "D:\\Custom_Resources"
+                  message:
+                    type: string
+                    example: "资源目录已更新"
+
+  # ==================== 系统清理接口 ====================
+  /api/cleanup/scan:
+    get:
+      tags:
+        - 系统清理
+      summary: 扫描临时文件
+      description: 扫描临时文件和旧文件
+      responses:
+        '200':
+          description: 成功扫描临时文件
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  total_size:
+                    type: integer
+                    description: 总大小（字节）
+                    example: 1048576
+                  file_count:
+                    type: integer
+                    description: 文件数量
+                    example: 10
+                  old_files:
+                    type: array
+                    description: 旧文件列表
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: string
+                          example: "temp/file1.jpg"
+                        size:
+                          type: integer
+                          example: 1024
+                        age_days:
+                          type: integer
+                          example: 60
+                        modified:
+                          type: string
+                          example: "2026-01-05"
+
+  /api/cleanup/execute:
+    post:
+      tags:
+        - 系统清理
+      summary: 清理临时文件
+      description: 清理指定天数前的临时文件
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days:
+                  type: integer
+                  description: 清理多少天前的文件
+                  default: 30
+                  example: 30
+      responses:
+        '200':
+          description: 清理完成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  deleted_count:
+                    type: integer
+                    description: 删除的文件数量
+                    example: 5
+                  deleted_size:
+                    type: integer
+                    description: 删除的总大小（字节）
+                    example: 524288
+                  errors:
+                    type: array
+                    description: 错误信息
+                    items:
+                      type: string
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT Token 认证
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "u1709727600000"
+        username:
+          type: string
+          example: "admin"
+        role:
+          type: string
+          enum: [admin, editor, viewer]
+          example: "admin"
+        createdAt:
+          type: string
+          example: "2026-03-06 17:20:00"
+
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        startDate:
+          type: string
+        endDate:
+          type: string
+
+    Player:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        stage:
+          type: string
+        organization:
+          type: string
+
+    Organization:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        contact:
+          type: string
+
+    Finance:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        amount:
+          type: number
+        date:
+          type: string
+        description:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "错误信息"
+        error:
+          type: string
+          example: "ERROR_CODE"

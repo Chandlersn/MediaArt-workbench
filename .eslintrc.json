@@ -1,0 +1,147 @@
+{
+  "root": true,
+  "env": {
+    "browser": true,
+    "es2021": true,
+    "node": true,
+    "vue/setup-compiler-macros": true
+  },
+  "extends": [
+    "eslint:recommended",
+    "plugin:vue/vue3-essential"
+  ],
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module"
+  },
+  "globals": {
+    "DataStore": "readonly",
+    "UI": "readonly",
+    "Validator": "readonly",
+    "API": "readonly",
+    "ArchiveManager": "readonly",
+    "FileManager": "readonly",
+    "Crypto": "readonly",
+    "FormValidator": "readonly",
+    "XSS": "readonly",
+    "ProjectAPI": "readonly",
+    "OrgAPI": "readonly",
+    "PlayerAPI": "readonly",
+    "FinanceAPI": "readonly",
+    "KnowledgeAPI": "readonly",
+    "MaterialTypeAPI": "readonly",
+    "UserAPI": "readonly",
+    "AuditLogAPI": "readonly",
+    "NotificationAPI": "readonly",
+    "AuthManager": "readonly",
+    "AuthAPI": "readonly",
+    "IncrementalStore": "readonly",
+    "CryptoUtils": "readonly",
+    "EventBus": "readonly",
+    "eventBus": "readonly",
+    "StateManager": "readonly",
+    "stateManager": "readonly",
+    "Router": "readonly",
+    "router": "readonly",
+    "BaseModule": "readonly",
+    "ModuleLoader": "readonly",
+    "moduleLoader": "readonly",
+    "BasePlugin": "readonly",
+    "createPluginContext": "readonly",
+    "PluginType": "readonly",
+    "PluginStatus": "readonly",
+    "ExtensionPoints": "readonly",
+    "PluginManager": "readonly",
+    "pluginManager": "readonly",
+    "StatsPlugin": "readonly",
+    "ThemePlugin": "readonly",
+    "ProjectUI": "readonly",
+    "PlayerUI": "readonly",
+    "OrgUI": "readonly",
+    "FinanceUI": "readonly",
+    "ResourceUI": "readonly",
+    "ResourceConfigUI": "readonly",
+    "ArchiveConfigUI": "readonly",
+    "MaterialConfigUI": "readonly",
+    "ChecklistUI": "readonly",
+    "ArchiveUI": "readonly",
+    "ArchiveHooks": "readonly",
+    "TemplateUI": "readonly",
+    "UserUI": "readonly",
+    "AuditLogUI": "readonly",
+    "NotificationUI": "readonly",
+    "Modal": "readonly",
+    "Chart": "readonly",
+    "FormSchemas": "readonly",
+    "showToast": "writable",
+    "__APP_VERSION__": "readonly"
+  },
+  "rules": {
+    "indent": [
+      "warn",
+      2,
+      {
+        "SwitchCase": 1
+      }
+    ],
+    "linebreak-style": [
+      "warn",
+      "unix"
+    ],
+    "quotes": [
+      "warn",
+      "single",
+      {
+        "avoidEscape": true
+      }
+    ],
+    "semi": [
+      "warn",
+      "never"
+    ],
+    "no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ],
+    "no-console": "off",
+    "no-debugger": "warn",
+    "prefer-const": "warn",
+    "arrow-spacing": "error",
+    "comma-dangle": [
+      "warn",
+      "never"
+    ],
+    "object-curly-spacing": [
+      "warn",
+      "always"
+    ],
+    "array-bracket-spacing": [
+      "warn",
+      "never"
+    ],
+    "space-before-blocks": "error",
+    "keyword-spacing": "warn",
+    "no-multiple-empty-lines": "warn",
+    "no-trailing-spaces": "warn",
+    "no-new": "error",
+    "prefer-template": "warn",
+    "template-curly-spacing": "error",
+    "dot-notation": "warn",
+    "no-duplicate-imports": "error",
+    "vue/multi-word-component-names": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "*.vue"
+      ],
+      "parser": "vue-eslint-parser",
+      "parserOptions": {
+        "ecmaVersion": "latest",
+        "sourceType": "module"
+      }
+    }
+  ]
+}
