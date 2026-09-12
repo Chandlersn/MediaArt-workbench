@@ -95,10 +95,15 @@ class TestRequireAuth:
 
 
 class TestRequirePermission:
-    """Test require_permission decorator."""
+    """Test require_permission decorator.
+
+    签名为 require_permission(module, action)，也支持 'module:action' 单字符串写法。
+    权限模型为 role -> module -> [actions]，ACTIONS = view / edit / delete，
+    其中 edit 涵盖新增与修改，不存在独立的 create 动作。
+    """
 
     def test_unauthenticated_returns_401(self):
-        @require_permission('delete')
+        @require_permission('projects', 'edit')
         def dummy_handler(request_context):
             return {'status': 200}
 
@@ -106,13 +111,25 @@ class TestRequirePermission:
         result = dummy_handler(request_context)
         assert result['status'] == 401
 
-    def test_viewer_cannot_delete(self):
-        import jwt
+    def test_viewer_can_view(self):
         from server.utils.jwt_handler import jwt_handler
-        
+
         token = jwt_handler.generate_token('u1', 'viewer_user', 'viewer')
 
-        @require_permission('delete')
+        @require_permission('projects', 'view')
+        def dummy_handler(request_context):
+            return {'status': 200}
+
+        request_context = {'headers': {'Authorization': f'Bearer {token}'}}
+        result = dummy_handler(request_context)
+        assert result['status'] == 200
+
+    def test_viewer_cannot_delete(self):
+        from server.utils.jwt_handler import jwt_handler
+
+        token = jwt_handler.generate_token('u1', 'viewer_user', 'viewer')
+
+        @require_permission('projects', 'delete')
         def dummy_handler(request_context):
             return {'status': 200}
 
@@ -122,12 +139,11 @@ class TestRequirePermission:
         assert result['body']['error'] == 'FORBIDDEN'
 
     def test_admin_can_delete(self):
-        import jwt
         from server.utils.jwt_handler import jwt_handler
-        
+
         token = jwt_handler.generate_token('u1', 'admin_user', 'admin')
 
-        @require_permission('delete')
+        @require_permission('projects', 'delete')
         def dummy_handler(request_context):
             return {'status': 200, 'body': {'success': True}}
 
@@ -136,13 +152,13 @@ class TestRequirePermission:
         assert result['status'] == 200
         assert result['body']['success'] is True
 
-    def test_editor_can_create(self):
-        import jwt
+    def test_editor_can_edit_business_module(self):
+        """editor 可以编辑业务模块（edit 涵盖新增与修改）"""
         from server.utils.jwt_handler import jwt_handler
-        
+
         token = jwt_handler.generate_token('u1', 'editor_user', 'editor')
 
-        @require_permission('create')
+        @require_permission('projects', 'edit')
         def dummy_handler(request_context):
             return {'status': 200}
 
@@ -150,13 +166,13 @@ class TestRequirePermission:
         result = dummy_handler(request_context)
         assert result['status'] == 200
 
-    def test_editor_cannot_manage_users(self):
-        import jwt
+    def test_editor_cannot_edit_users(self):
+        """editor 对用户模块仅可查看，不能编辑"""
         from server.utils.jwt_handler import jwt_handler
-        
+
         token = jwt_handler.generate_token('u1', 'editor_user', 'editor')
 
-        @require_permission('manage_users')
+        @require_permission('users', 'edit')
         def dummy_handler(request_context):
             return {'status': 200}
 
@@ -164,6 +180,19 @@ class TestRequirePermission:
         result = dummy_handler(request_context)
         assert result['status'] == 403
 
+    def test_colon_form_supported(self):
+        """支持 'module:action' 单字符串写法"""
+        from server.utils.jwt_handler import jwt_handler
+
+        token = jwt_handler.generate_token('u1', 'admin_user', 'admin')
+
+        @require_permission('projects:delete')
+        def dummy_handler(request_context):
+            return {'status': 200}
+
+        request_context = {'headers': {'Authorization': f'Bearer {token}'}}
+        result = dummy_handler(request_context)
+        assert result['status'] == 200
 
 class TestRateLimiter:
     """Test RateLimiter class."""

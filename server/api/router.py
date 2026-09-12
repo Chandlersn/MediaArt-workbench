@@ -49,6 +49,9 @@ class APIRouter:
             from server.resources.routes import ResourcesRouter
             self._resources_router = ResourcesRouter()
             self.routes['/api/resources'] = self._resources_router
+            for p in ('/api/list-files', '/api/upload', '/api/get-file',
+                      '/api/delete-file', '/api/open-resource', '/api/open-folder'):
+                self.routes[p] = self._resources_router
         except ImportError as e:
             logger.warning(f"Resources module not available: {e}")
 
@@ -77,17 +80,58 @@ class APIRouter:
             logger.warning(f"Knowledge module not available: {e}")
 
         try:
+            from server.search.routes import SearchRouter
+            self.routes['/api/search'] = SearchRouter()
+        except ImportError as e:
+            logger.warning(f"Search module not available: {e}")
+
+        try:
+            from server.notifications.routes import NotificationsRouter
+            self.routes['/api/notifications'] = NotificationsRouter()
+        except ImportError as e:
+            logger.warning(f"Notifications module not available: {e}")
+
+        try:
+            from server.system.routes import SystemRouter
+            self._system_router = SystemRouter()
+            for p in ('/api/status', '/api/browse-dirs', '/api/open-file',
+                      '/api/preview-text', '/api/config/archive-path',
+                      '/api/config/resources-path', '/api/audit-logs',
+                      '/api/cleanup/scan', '/api/cleanup/execute',
+                      '/api/save-stage-materials'):
+                self.routes[p] = self._system_router
+        except ImportError as e:
+            logger.warning(f"System module not available: {e}")
+
+        try:
+            from server.materials.routes import MaterialsRouter
+            self._materials_router = MaterialsRouter()
+            for p in ('/api/scan-project-files', '/api/scan-org-files', '/api/scan-player-files',
+                      '/api/download-project-material', '/api/download-player-material',
+                      '/api/get-org-material', '/api/delete-project-material',
+                      '/api/delete-org-material', '/api/delete-player-material',
+                      '/api/import-players'):
+                self.routes[p] = self._materials_router
+        except ImportError as e:
+            logger.warning(f"Materials module not available: {e}")
+
+        try:
             from server.archive.routes import ArchiveRouter
             self._archive_router = ArchiveRouter()
         except ImportError as e:
             logger.warning(f"Archive module not available: {e}")
 
     def _is_archive_route(self, path: str) -> bool:
-        """Check if path matches an archive API route."""
+        """Check if path matches an archive API route.
+
+        注意：/api/upload 与 /api/delete-file 被前端多个页面（资源中心、模板、
+        归档、项目/机构/选手资料）复用，需要按字段/路径区分写入的资源目录还是
+        归档目录，因此统一交给 ResourcesRouter 处理，不在此处截获。
+        """
         archive_paths = [
             '/api/count-files', '/api/list-archives', '/api/open-archive',
-            '/api/delete-file', '/api/delete-folder', '/api/create-folder',
-            '/api/upload', '/api/rename-folder', '/api/file-icon'
+            '/api/delete-folder', '/api/create-folder',
+            '/api/rename-folder', '/api/file-icon'
         ]
         return path in archive_paths
 

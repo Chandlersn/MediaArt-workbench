@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hashed INTEGER DEFAULT 0,
     password_migrated_at TEXT,
     created_at TEXT,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -126,13 +127,18 @@ CREATE TABLE IF NOT EXISTS material_types (
 );
 
 -- ========== 知识库表 ==========
+-- type 取值：guide / troubleshoot / case / tip / reference（5 类语义化）
+-- tags / fields / links 以 JSON 字符串承载结构化内容
 CREATE TABLE IF NOT EXISTS knowledge (
     id TEXT PRIMARY KEY,
-    type TEXT,  -- 'solutions', 'practices', 'training'
+    type TEXT,  -- 'guide', 'troubleshoot', 'case', 'tip', 'reference'
     title TEXT NOT NULL,
     description TEXT,
     author TEXT,
     date TEXT,
+    tags TEXT,        -- JSON 数组：标签
+    fields TEXT,      -- JSON 对象：按类型模板的结构化字段
+    links TEXT,       -- JSON 数组：关联业务实体（project/player/org）
     created_at TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

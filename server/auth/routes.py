@@ -53,7 +53,9 @@ class AuthRouter:
         refresh_token = jwt_handler.generate_refresh_token(user_id, username)
         return {
             'access_token': access_token,
-            'refresh_token': refresh_token
+            'refresh_token': refresh_token,
+            # 前端据此推算过期时刻；缺失会让前端存成 NaN，导致"总是判定即将过期"
+            'expires_in': jwt_handler.expires_in
         }
 
     def _verify_token(self, token: str, token_type: str = 'access') -> Dict:
@@ -141,6 +143,17 @@ class AuthRouter:
 
         login_rate_limiter.reset(client_ip)
 
+        # 停用账号禁止登录（Model 读出的字典键为驼峰 isActive）
+        _ia = user.get('isActive')
+        if _ia is None:
+            _ia = user.get('is_active', 1)
+        if int(_ia) == 0:
+            return {
+                'status': 403,
+                'body': {'success': False, 'message': '该账号已被停用，请联系管理员', 'error': 'ACCOUNT_DISABLED'},
+                'headers': {'Content-Type': 'application/json'}
+            }
+
         # Generate tokens
         tokens = self._generate_tokens(
             user.get('id', ''),
@@ -154,11 +167,13 @@ class AuthRouter:
                 'success': True,
                 'access_token': tokens['access_token'],
                 'refresh_token': tokens['refresh_token'],
+                'expires_in': tokens['expires_in'],
                 'user': {
                     'id': user.get('id'),
                     'username': user.get('username'),
                     'role': user.get('role'),
-                    'real_name': user.get('real_name')
+                    'realName': user.get('realName'),
+                    'real_name': user.get('realName')
                 }
             },
             'headers': {'Content-Type': 'application/json'}
@@ -175,7 +190,7 @@ class AuthRouter:
             }
 
         from server.utils.permissions import has_permission
-        if not has_permission(user_payload.get('role', 'viewer'), 'manage_users'):
+        if not has_permission(user_payload.get('role', 'viewer'), 'users', 'edit'):
             return {
                 'status': 403,
                 'body': {'success': False, 'message': '权限不足，需要管理用户权限', 'error': 'FORBIDDEN'},
@@ -263,7 +278,8 @@ class AuthRouter:
                 'body': {
                     'success': True,
                     'access_token': tokens['access_token'],
-                    'refresh_token': tokens['refresh_token']
+                    'refresh_token': tokens['refresh_token'],
+                    'expires_in': tokens['expires_in']
                 },
                 'headers': {'Content-Type': 'application/json'}
             }
@@ -314,7 +330,8 @@ class AuthRouter:
                     'id': user.get('id'),
                     'username': user.get('username'),
                     'role': user.get('role'),
-                    'real_name': user.get('real_name')
+                    'realName': user.get('realName'),
+                    'real_name': user.get('realName')
                 }
             },
             'headers': {'Content-Type': 'application/json'}

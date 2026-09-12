@@ -41,19 +41,13 @@
           </div>
           <div class="form-group">
             <label>合作机构</label>
-            <select
-              multiple
+            <CustomSelect
               v-model="formData.orgIds"
-              class="form-input form-input-multiselect"
-            >
-              <option
-                v-for="org in organizations"
-                :key="org.id"
-                :value="org.id"
-              >
-                {{ org.name }}
-              </option>
-            </select>
+              multiple
+              :options="orgOptions"
+              placeholder="请选择合作机构"
+              style="width:100%"
+            />
           </div>
           <div class="form-group">
             <label>项目负责人</label>
@@ -145,7 +139,9 @@ const formData = ref({
   description: ''
 })
 
-const organizations = computed(() => orgStore.organizations)
+const orgOptions = computed(() =>
+  (orgStore.organizations || []).map(o => ({ value: o.id, label: o.name }))
+)
 
 onMounted(async () => {
   orgStore.loadOrganizations()
@@ -283,21 +279,6 @@ const handleSave = async () => {
 
 .form-input:disabled {
   background: var(--bg-secondary, #f5f5f5);
-}
-
-.form-input-multiselect {
-  min-height: 80px;
-  padding: 6px 8px;
-}
-
-.form-input-multiselect option {
-  padding: 6px 8px;
-  border-radius: 4px;
-}
-
-.form-input-multiselect option:checked {
-  background: var(--accent);
-  color: #fff;
 }
 
 .form-actions {

@@ -15,15 +15,23 @@ from datetime import datetime, timedelta
 class JWTHandler:
     """JWT Token 处理器"""
 
-    def __init__(self, secret_key=None, algorithm='HS256', expires_in=7200):
+    # 单机自用场景：服务只监听 127.0.0.1，登录一次管 7 天，避免频繁掉线。
+    # 两者必须拉开差距，否则刷新机制失去意义；
+    # clear_expired_blacklist 的清理周期也要 >= REFRESH_TOKEN_EXPIRES_IN，
+    # 否则被撤销的 token 会在其自身过期前就被移出黑名单（撤销失效）。
+    ACCESS_TOKEN_EXPIRES_IN = 7 * 24 * 60 * 60      # 7 天
+    REFRESH_TOKEN_EXPIRES_IN = 30 * 24 * 60 * 60    # 30 天
+
+    def __init__(self, secret_key=None, algorithm='HS256',
+                 expires_in=ACCESS_TOKEN_EXPIRES_IN):
         """
         初始化 JWT 处理器
 
         Args:
             secret_key: JWT 密钥，如果不提供则自动生成
             algorithm: 加密算法，默认 HS256
-            expires_in: Token 有效期（秒），默认 2 小时。
-                       必须与 refresh token（7 天）拉开差距，否则刷新机制失去意义。
+            expires_in: 访问 Token 有效期（秒），默认 7 天。
+                       必须与 refresh token（30 天）拉开差距，否则刷新机制失去意义。
         """
         self.algorithm = algorithm
         self.expires_in = expires_in
@@ -120,7 +128,7 @@ class JWTHandler:
 
     def generate_refresh_token(self, user_id, username):
         """
-        生成刷新 Token（有效期 7 天）
+        生成刷新 Token（有效期 30 天）
 
         Args:
             user_id: 用户ID
@@ -133,7 +141,7 @@ class JWTHandler:
             'user_id': user_id,
             'username': username,
             'iat': int(time.time()),
-            'exp': int(time.time()) + 604800,  # 7 天
+            'exp': int(time.time()) + self.REFRESH_TOKEN_EXPIRES_IN,  # 30 天
             'type': 'refresh'
         }
 
@@ -211,14 +219,18 @@ class JWTHandler:
             return token_id in self._blacklist
 
     def clear_expired_blacklist(self):
-        """清理过期的黑名单条目（超过7天的）"""
+        """清理过期的黑名单条目
+
+        清理周期必须 >= REFRESH_TOKEN_EXPIRES_IN：条目在其对应 token 自身过期前
+        都必须留在黑名单里，否则被撤销的 token 会提前"复活"。
+        """
         current_time = int(time.time())
         with self._blacklist_lock:
             expired = set()
             for entry in self._blacklist:
                 try:
                     iat = int(entry.split('_')[0]) if '_' in entry else 0
-                    if current_time - iat > 604800:
+                    if current_time - iat > self.REFRESH_TOKEN_EXPIRES_IN:
                         expired.add(entry)
                 except (ValueError, IndexError):
                     expired.add(entry)

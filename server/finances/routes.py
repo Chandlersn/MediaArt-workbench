@@ -20,11 +20,11 @@ class FinancesRouter:
         method = request_context.get('method', 'GET')
 
         try:
-            if method == 'GET' and path == '/api/finances':
+            if method == 'GET' and path in ('/api/finances', '/api/finances/list'):
                 return self.list_finances(request_context)
             elif method == 'GET' and path.startswith('/api/finances/'):
                 finance_id = path.split('/')[-1]
-                return self.get_finance(finance_id)
+                return self.get_finance(finance_id, request_context)
             elif method == 'POST' and path == '/api/finances':
                 return self.create_finance(request_context)
             elif method == 'PUT' and path.startswith('/api/finances/'):
@@ -32,7 +32,7 @@ class FinancesRouter:
                 return self.update_finance(finance_id, request_context)
             elif method == 'DELETE' and path.startswith('/api/finances/'):
                 finance_id = path.split('/')[-1]
-                return self.delete_finance(finance_id)
+                return self.delete_finance(finance_id, request_context)
             else:
                 return {
                     'status': 405,
@@ -47,7 +47,7 @@ class FinancesRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_auth
+    @require_permission('finances', 'view')
     def list_finances(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Get all finance records with optional filtering."""
         query_params = request_context.get('query_params', {})
@@ -69,7 +69,7 @@ class FinancesRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_auth
+    @require_permission('finances', 'view')
     def get_finance(self, finance_id, request_context=None) -> Dict[str, Any]:
         """Get a specific finance record by ID."""
         finance = data_store.finances.get_by_id(finance_id)
@@ -85,7 +85,7 @@ class FinancesRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('create')
+    @require_permission('finances', 'edit')
     def create_finance(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new finance record."""
         body = request_context.get('body', b'')
@@ -98,7 +98,7 @@ class FinancesRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('update')
+    @require_permission('finances', 'edit')
     def update_finance(self, finance_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Update a finance record."""
         body = request_context.get('body', b'')
@@ -114,7 +114,7 @@ class FinancesRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('delete')
+    @require_permission('finances', 'delete')
     def delete_finance(self, finance_id, request_context=None) -> Dict[str, Any]:
         """Delete a finance record."""
         success = data_store.finances.delete(finance_id)

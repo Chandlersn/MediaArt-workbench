@@ -1,0 +1,102 @@
+{
+  "admin": {
+    "projects": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "organizations": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "players": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "finances": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "users": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "knowledge": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "resources": [
+      "view",
+      "edit",
+      "delete"
+    ],
+    "settings": [
+      "view",
+      "edit",
+      "delete"
+    ]
+  },
+  "editor": {
+    "projects": [
+      "view",
+      "edit"
+    ],
+    "organizations": [
+      "view",
+      "edit"
+    ],
+    "players": [
+      "view",
+      "edit"
+    ],
+    "finances": [
+      "view",
+      "edit"
+    ],
+    "knowledge": [
+      "view",
+      "edit"
+    ],
+    "resources": [
+      "view",
+      "edit"
+    ],
+    "users": [
+      "view"
+    ],
+    "settings": [
+      "view"
+    ]
+  },
+  "viewer": {
+    "projects": [
+      "view"
+    ],
+    "organizations": [
+      "view"
+    ],
+    "players": [
+      "view"
+    ],
+    "finances": [
+      "view"
+    ],
+    "users": [
+      "view"
+    ],
+    "knowledge": [
+      "view"
+    ],
+    "resources": [
+      "view"
+    ],
+    "settings": [
+      "view"
+    ]
+  }
+}

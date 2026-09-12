@@ -56,10 +56,43 @@ export function useConfirmDialog() {
     })
   }
 
+  /**
+   * 带输入框的提示（替代原生 prompt）：
+   * 确认时 resolve 输入值（空则 null），取消时 resolve(null)。
+   */
+  const prompt = (options = {}) => {
+    return new Promise((resolve) => {
+      const id = ++dialogId
+      const dialog = {
+        id,
+        title: options.title || '请输入',
+        message: options.message || '',
+        confirmText: options.confirmText || '确定',
+        cancelText: options.cancelText || '取消',
+        type: options.type || 'info',
+        input: true,
+        inputValue: options.defaultValue != null ? String(options.defaultValue) : '',
+        inputPlaceholder: options.placeholder || '',
+        onConfirm: () => {
+          const val = (dialog.inputValue || '').trim()
+          resolve(val === '' ? null : val)
+          removeDialog(id)
+        },
+        onCancel: () => {
+          resolve(null)
+          removeDialog(id)
+        }
+      }
+
+      dialogs.value.push(dialog)
+    })
+  }
+
   return {
     dialogs,
     confirm,
     alert,
+    prompt,
     removeDialog
   }
 }

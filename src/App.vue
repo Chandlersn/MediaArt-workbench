@@ -6,6 +6,7 @@
         <h1>媒体艺术智能工作台</h1>
       </div>
       <div class="header-actions">
+        <GlobalSearch />
         <span class="current-date">{{ currentDateStr }}</span>
         <button class="theme-toggle" @click="toggleTheme" title="切换主题">
           <span class="theme-icon-light">☀️</span>
@@ -196,6 +197,7 @@ import Toast from './components/Toast.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Message from './components/Message.vue'
 import NotificationPanel from './components/NotificationPanel.vue'
+import GlobalSearch from './components/GlobalSearch.vue'
 import { useToast } from './composables/useToast'
 
 import { getCurrentUser, isAuthenticated, logout } from './services/auth'
@@ -320,10 +322,6 @@ const handleLogout = async () => {
 }
 
 // 定时器与可见性处理放在模块作用域。
-// 此前 dateInterval / notificationInterval / startTimers / stopTimers /
-// handleVisibilityChange 都定义在 onMounted 的回调内部，导致 onUnmounted 里引用
-// stopTimers 与 handleVisibilityChange 时抛 ReferenceError —— 清理逻辑中断，
-// click 与 visibilitychange 两个监听器被泄漏。
 let dateInterval = null
 let notificationInterval = null
 
@@ -361,7 +359,6 @@ onMounted(() => {
 
   // 监听认证过期事件，显示登录弹窗
   window.addEventListener('auth:required', () => {
-    // 凭证已失效，顶部按钮同步切回「登录」
     updateUserInfo()
     showLogin.value = true
   })

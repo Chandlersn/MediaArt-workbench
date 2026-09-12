@@ -26,7 +26,7 @@ class PlayersRouter:
                 return self.list_players(request_context)
             elif method == 'GET' and path.startswith('/api/players/'):
                 player_id = path.split('/')[-1]
-                return self.get_player(player_id)
+                return self.get_player(player_id, request_context)
             elif method == 'POST' and path == '/api/players':
                 return self.create_player(request_context)
             elif method == 'PUT' and path.startswith('/api/players/'):
@@ -34,7 +34,7 @@ class PlayersRouter:
                 return self.update_player(player_id, request_context)
             elif method == 'DELETE' and path.startswith('/api/players/'):
                 player_id = path.split('/')[-1]
-                return self.delete_player(player_id)
+                return self.delete_player(player_id, request_context)
             else:
                 return {
                     'status': 405,
@@ -49,7 +49,7 @@ class PlayersRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_auth
+    @require_permission('players', 'view')
     def list_players(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Get all players with optional filtering."""
         query_params = request_context.get('query_params', {})
@@ -71,7 +71,7 @@ class PlayersRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_auth
+    @require_permission('players', 'view')
     def get_player(self, player_id, request_context=None) -> Dict[str, Any]:
         """Get a specific player by ID."""
         player = data_store.players.get_by_id(player_id)
@@ -87,7 +87,7 @@ class PlayersRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('create')
+    @require_permission('players', 'edit')
     def create_player(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new player."""
         body = request_context.get('body', b'')
@@ -100,7 +100,7 @@ class PlayersRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('update')
+    @require_permission('players', 'edit')
     def update_player(self, player_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Update a player."""
         body = request_context.get('body', b'')
@@ -116,7 +116,7 @@ class PlayersRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('delete')
+    @require_permission('players', 'delete')
     def delete_player(self, player_id, request_context=None) -> Dict[str, Any]:
         """Delete a player."""
         success = data_store.players.delete(player_id)

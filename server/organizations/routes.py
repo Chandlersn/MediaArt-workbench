@@ -26,7 +26,7 @@ class OrganizationsRouter:
                 return self.list_organizations(request_context)
             elif method == 'GET' and path.startswith('/api/organizations/'):
                 org_id = path.split('/')[-1]
-                return self.get_organization(org_id)
+                return self.get_organization(org_id, request_context)
             elif method == 'POST' and path == '/api/organizations':
                 return self.create_organization(request_context)
             elif method == 'PUT' and path.startswith('/api/organizations/'):
@@ -34,7 +34,7 @@ class OrganizationsRouter:
                 return self.update_organization(org_id, request_context)
             elif method == 'DELETE' and path.startswith('/api/organizations/'):
                 org_id = path.split('/')[-1]
-                return self.delete_organization(org_id)
+                return self.delete_organization(org_id, request_context)
             else:
                 return {
                     'status': 405,
@@ -49,7 +49,7 @@ class OrganizationsRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_auth
+    @require_permission('organizations', 'view')
     def list_organizations(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Get all organizations with optional filtering."""
         query_params = request_context.get('query_params', {})
@@ -71,7 +71,7 @@ class OrganizationsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_auth
+    @require_permission('organizations', 'view')
     def get_organization(self, org_id, request_context=None) -> Dict[str, Any]:
         """Get a specific organization by ID."""
         org = data_store.organizations.get_by_id(org_id)
@@ -87,7 +87,7 @@ class OrganizationsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('create')
+    @require_permission('organizations', 'edit')
     def create_organization(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new organization."""
         body = request_context.get('body', b'')
@@ -100,7 +100,7 @@ class OrganizationsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('update')
+    @require_permission('organizations', 'edit')
     def update_organization(self, org_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Update an organization."""
         body = request_context.get('body', b'')
@@ -116,7 +116,7 @@ class OrganizationsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('delete')
+    @require_permission('organizations', 'delete')
     def delete_organization(self, org_id, request_context=None) -> Dict[str, Any]:
         """Delete an organization."""
         success = data_store.organizations.delete(org_id)

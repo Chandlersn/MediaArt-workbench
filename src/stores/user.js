@@ -8,6 +8,8 @@ export const useUserStore = defineStore('user', () => {
   const currentUser = ref(null)
   const loading = ref(false)
   const error = ref(null)
+  const permissions = ref(null) // 当前登录用户的有效权限矩阵 { module: [actions] }
+  const role = ref('')
 
   const loadUsers = async () => {
     loading.value = true
@@ -27,6 +29,32 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  const loadPermissions = async () => {
+    try {
+      const result = await get('/api/permissions/me')
+      if (result.success) {
+        permissions.value = result.permissions || {}
+        role.value = result.role || ''
+      }
+    } catch (e) {
+      console.error('加载权限失败:', e)
+    }
+  }
+
+  const can = (module, action) => {
+    const acts = permissions.value?.[module] || []
+    return acts.includes(action)
+  }
+
+  const savePermissions = async (matrix) => {
+    const result = await put('/api/permissions/roles', { roles: matrix })
+    if (result.success) {
+      return result
+    } else {
+      throw new Error(result.message || '保存失败')
+    }
+  }
+
   const getUserById = (id) => {
     return users.value.find(u => u.id === id)
   }
@@ -35,7 +63,15 @@ export const useUserStore = defineStore('user', () => {
     loading.value = true
     error.value = null
     try {
-      const result = await post('/api/users', userData)
+      // 后端 users 表字段：username / real_name / email / role / password
+      const payload = {
+        username: userData.username,
+        real_name: userData.real_name ?? userData.realName ?? userData.name ?? '',
+        password: userData.password || '',
+        email: userData.email || '',
+        role: userData.role || 'viewer'
+      }
+      const result = await post('/api/users', payload)
       if (result.success) {
         users.value.push(result.user)
         try {
@@ -44,7 +80,7 @@ export const useUserStore = defineStore('user', () => {
             action: 'create_user',
             actionType: 'create',
             target: '用户',
-            description: `创建用户"${userData.name || '未命名'}"`
+            description: `创建用户"${payload.real_name || payload.username}"`
           })
         } catch (e) {
           console.warn('记录审计日志失败:', e)
@@ -68,11 +104,22 @@ export const useUserStore = defineStore('user', () => {
     loading.value = true
     error.value = null
     try {
-      const result = await put(`/api/users/${id}`, userData)
+      const payload = {}
+      if (userData.real_name !== undefined || userData.realName !== undefined || userData.name !== undefined) {
+        payload.real_name = userData.real_name ?? userData.realName ?? userData.name ?? ''
+      }
+      if (userData.email !== undefined) payload.email = userData.email
+      if (userData.role !== undefined) payload.role = userData.role
+      if (userData.is_active !== undefined || userData.isActive !== undefined) {
+        payload.is_active = userData.is_active ?? userData.isActive
+      }
+      if (userData.password) payload.password = userData.password
+
+      const result = await put(`/api/users/${id}`, payload)
       if (result.success) {
         const index = users.value.findIndex(u => u.id === id)
         if (index !== -1) {
-          users.value[index] = { ...users.value[index], ...userData }
+          users.value[index] = result.user || { ...users.value[index], ...payload }
         }
         try {
           const auditStore = useAuditLogStore()
@@ -80,7 +127,7 @@ export const useUserStore = defineStore('user', () => {
             action: 'update_user',
             actionType: 'update',
             target: '用户',
-            description: `更新用户"${userData.name || '未命名'}"`
+            description: `更新用户"${payload.real_name || users.value[index]?.username || ''}"`
           })
         } catch (e) {
           console.warn('记录审计日志失败:', e)
@@ -113,7 +160,7 @@ export const useUserStore = defineStore('user', () => {
             action: 'delete_user',
             actionType: 'delete',
             target: '用户',
-            description: `删除用户"${user?.name || '未命名'}"`
+            description: `删除用户"${user?.realName || user?.username || '未命名'}"`
           })
         } catch (e) {
           console.warn('记录审计日志失败:', e)
@@ -139,7 +186,7 @@ export const useUserStore = defineStore('user', () => {
       if (result.success) {
         const index = users.value.findIndex(u => u.id === id)
         if (index !== -1) {
-          users.value[index].status = result.status
+          users.value[index].isActive = result.status
         }
         return result.status
       } else {
@@ -157,8 +204,8 @@ export const useUserStore = defineStore('user', () => {
 
   const getUserStats = () => {
     const total = users.value.length
-    const active = users.value.filter(u => u.status === 'active').length
-    const inactive = users.value.filter(u => u.status !== 'active').length
+    const active = users.value.filter(u => u.isActive !== 0 && u.isActive !== false).length
+    const inactive = users.value.filter(u => u.isActive === 0 || u.isActive === false).length
     const byRole = {}
     for (const u of users.value) {
       byRole[u.role] = (byRole[u.role] || 0) + 1
@@ -171,7 +218,12 @@ export const useUserStore = defineStore('user', () => {
     currentUser,
     loading,
     error,
+    permissions,
+    role,
     loadUsers,
+    loadPermissions,
+    can,
+    savePermissions,
     getUserById,
     addUser,
     updateUser,

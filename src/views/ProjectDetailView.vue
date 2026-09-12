@@ -196,7 +196,7 @@ import { computed, onMounted, ref, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore, useOrganizationStore } from '../stores'
 import { useCertificateStore } from '../stores/certificate'
-import { get, fetchWithAuth } from '../services/http.js'
+import { get, fetchWithAuth, getBlob } from '../services/http.js'
 import { parseOrgIds } from '../utils/dataHelpers'
 import CustomSelect from '../components/CustomSelect.vue'
 import FilePreviewPanel from '../components/FilePreviewPanel.vue'
@@ -400,13 +400,22 @@ const uploadMaterial = async () => {
   }
 }
 
-const downloadMaterial = (material) => {
-  // 创建下载链接
-  const link = document.createElement('a')
-  link.href = `/api/download-project-material?projectName=${encodeURIComponent(project.value.name)}&fileName=${encodeURIComponent(material.name)}`
-  link.download = material.name
-  link.target = '_blank'
-  link.click()
+const downloadMaterial = async (material) => {
+  try {
+    const url = `/api/download-project-material?projectName=${encodeURIComponent(project.value.name)}&fileName=${encodeURIComponent(material.name)}`
+    const blob = await getBlob(url)
+    const objUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objUrl
+    link.download = material.name
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(objUrl)
+  } catch (e) {
+    console.error('下载资料失败:', e)
+    error(e?.message || '下载失败，请重试')
+  }
 }
 
 const deleteMaterial = async (index) => {

@@ -6,7 +6,7 @@ import { useToast } from '../composables/useToast'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 import { get, post, del, fetchWithAuth } from '../services/http.js'
 const { success, error } = useToast()
-const { confirm } = useConfirmDialog()
+const { confirm, prompt } = useConfirmDialog()
 
 // 归档根目录下的文件夹即"分类"。本地目录名带序号前缀（如 01_项目资料），
 // 展示时去掉前缀；描述仅对内置 6 类保留文案，其余用默认。
@@ -294,10 +294,15 @@ const deleteFolder = async (path, name) => {
 }
 
 const renameFolder = async (path, oldName) => {
-  const newName = prompt('请输入新的文件夹名称:', oldName)
-  if (!newName || !newName.trim()) return
+  const newName = await prompt({
+    title: '重命名文件夹',
+    message: '请输入新的文件夹名称',
+    defaultValue: oldName,
+    placeholder: '文件夹名称'
+  })
+  if (!newName) return
 
-  const trimmedName = newName.trim()
+  const trimmedName = newName
   if (trimmedName === oldName) return
 
   try {

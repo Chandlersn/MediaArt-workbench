@@ -7,7 +7,15 @@
           <h3 class="confirm-dialog-title">{{ dialog.title }}</h3>
         </div>
         <div class="confirm-dialog-body">
-          <p>{{ dialog.message }}</p>
+          <p v-if="dialog.message">{{ dialog.message }}</p>
+          <input
+            v-if="dialog.input"
+            v-model="dialog.inputValue"
+            class="confirm-dialog-input"
+            :placeholder="dialog.inputPlaceholder"
+            :ref="el => { if (el) el.focus() }"
+            @keyup.enter="dialog.onConfirm"
+          />
         </div>
         <div class="confirm-dialog-footer">
           <button
@@ -97,6 +105,26 @@ const getIcon = (type) => {
   font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.confirm-dialog-input {
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-primary);
+  box-sizing: border-box;
+  transition: all var(--transition-fast);
+}
+
+.confirm-dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light, rgba(59, 130, 246, 0.15));
 }
 
 .confirm-dialog-footer {

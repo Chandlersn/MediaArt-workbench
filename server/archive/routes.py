@@ -90,7 +90,7 @@ class ArchiveRouter:
 
         return full_path
 
-    @require_auth
+    @require_permission('resources', 'view')
     def count_files(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Count files and folders in a directory."""
         query_params = request_context.get('query_params', {})
@@ -197,7 +197,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_auth
+    @require_permission('resources', 'view')
     def list_archives(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """List files and folders in archive directory."""
         query_params = request_context.get('query_params', {})
@@ -247,7 +247,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_auth
+    @require_permission('resources', 'view')
     def open_archive(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Open a file with default application."""
         body = request_context.get('body', b'')
@@ -284,7 +284,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_permission('delete')
+    @require_permission('resources', 'delete')
     def delete_file(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Delete a file."""
         query_params = request_context.get('query_params', {})
@@ -315,7 +315,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_permission('delete')
+    @require_permission('resources', 'delete')
     def delete_folder(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Delete a folder and its contents."""
         query_params = request_context.get('query_params', {})
@@ -346,7 +346,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_permission('create')
+    @require_permission('resources', 'edit')
     def create_folder(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new folder."""
         body = request_context.get('body', b'')
@@ -377,7 +377,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_permission('create')
+    @require_permission('resources', 'edit')
     def upload_file(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Upload a file to archive directory."""
         body = request_context.get('body', b'')
@@ -466,7 +466,7 @@ class ArchiveRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_permission('update')
+    @require_permission('resources', 'edit')
     def rename_folder(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Rename a folder."""
         body = request_context.get('body', b'')

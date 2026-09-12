@@ -466,7 +466,7 @@ import * as dataService from '../services/dataService.js'
 import CustomSelect from '../components/CustomSelect.vue'
 
 const { success, error, warning } = useToast()
-const { confirm } = useConfirmDialog()
+const { confirm, alert } = useConfirmDialog()
 
 const appVersion = __APP_VERSION__
 
@@ -1249,12 +1249,12 @@ const exportDataCSV = async () => {
     await dataService.load()
   } catch (e) {
     console.error('加载数据失败:', e)
-    alert('数据加载失败')
+    alert({ title: '提示', message: '数据加载失败', type: 'warning' })
     return
   }
   const data = dataService.getData()
   if (!data) {
-    alert('数据加载失败')
+    alert({ title: '提示', message: '数据加载失败', type: 'warning' })
     return
   }
 

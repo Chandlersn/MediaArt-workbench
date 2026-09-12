@@ -40,41 +40,44 @@ async function handleResponse(res, retryFn) {
 
   // 401 未授权，尝试刷新 Token
   if (res.status === 401) {
-    const errorCode = data.error || data.message || ''
+    // 后端不同路径返回的错误码不统一（UNAUTHORIZED / INVALID_OR_EXPIRED_TOKEN /
+    // "认证失败，Token 无效或缺失" …），只匹配某一个字段会漏判，
+    // 所以把 error + message 拼起来再做大小写不敏感匹配。
+    const errorText = `${data.error || ''} ${data.message || ''}`.toLowerCase()
 
-    if (errorCode.includes('REVOKED') || errorCode.includes('撤销')) {
+    // 只有「被撤销」这类必须重新登录的情况才直接登出
+    if (errorText.includes('revoked') || errorText.includes('撤销')) {
       clearAuthData()
       window.dispatchEvent(new CustomEvent('auth:required'))
       throw new Error('Token 已被撤销，请重新登录')
     }
 
-    if (errorCode.includes('TOKEN') || errorCode.includes('token') || errorCode.includes('认证')) {
-      if (!isRefreshing) {
-        isRefreshing = true
-        try {
-          await refreshToken()
-          isRefreshing = false
-          // 通知所有等待的请求重试
-          refreshSubscribers.forEach(cb => cb())
-          refreshSubscribers = []
-          // 重试原请求
-          return retryFn()
-        } catch (refreshError) {
-          isRefreshing = false
-          refreshSubscribers = []
-          clearAuthData()
-          // 触发全局登录（通过路由守卫）
-          window.dispatchEvent(new CustomEvent('auth:required'))
-          throw new Error('登录已过期，请重新登录')
-        }
-      } else {
-        // 等待刷新完成后再重试
-        return new Promise((resolve) => {
-          refreshSubscribers.push(() => {
-            resolve(retryFn())
-          })
-        })
+    // 其余 401（过期 / 无效 / 缺失）统一走刷新重试；刷新失败会登出并跳登录
+    if (!isRefreshing) {
+      isRefreshing = true
+      try {
+        await refreshToken()
+        isRefreshing = false
+        // 通知所有等待的请求重试
+        refreshSubscribers.forEach(cb => cb())
+        refreshSubscribers = []
+        // 重试原请求
+        return retryFn()
+      } catch (refreshError) {
+        isRefreshing = false
+        refreshSubscribers = []
+        clearAuthData()
+        // 触发全局登录（通过路由守卫）
+        window.dispatchEvent(new CustomEvent('auth:required'))
+        throw new Error('登录已过期，请重新登录')
       }
+    } else {
+      // 等待刷新完成后再重试
+      return new Promise((resolve) => {
+        refreshSubscribers.push(() => {
+          resolve(retryFn())
+        })
+      })
     }
   }
 

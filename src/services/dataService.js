@@ -52,8 +52,18 @@ export function setData(key, value) {
 
 /**
  * 将当前内存数据全量持久化到后端
+ *
+ * 防抹库守卫：调用方必须确保数据已加载。若尚未加载，先尝试一次安全加载；
+ * 加载失败则中止保存（绝不拿空/陈旧数据覆盖服务端全量数据）。
  */
 export async function save() {
+  if (!_data) {
+    try {
+      await load()
+    } catch (e) {
+      throw new Error('数据未加载，且重新加载失败，已中止保存以防覆盖服务端数据')
+    }
+  }
   if (!_data) throw new Error('数据未加载，无法保存')
   const result = await post(SAVE_URL, _data)
   if (!result.success) throw new Error(result.message || '保存失败')

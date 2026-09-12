@@ -92,3 +92,10 @@ js/
 
 # ===== 初始密码文件 =====
 data/initial_password.txt
+
+# ===== 界面验证截图（临时产物，不入库） =====
+_verify_*.png
+
+# ===== 本地沙箱辅助脚本（仅在 WorkBuddy 沙箱内保活后端用，非项目依赖） =====
+backend_launcher.py
+start_backend_daemon.js

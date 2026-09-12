@@ -29,13 +29,13 @@
             v-for="option in effectiveOptions"
             :key="option.value"
             class="custom-select-option"
-            :class="{ 'is-selected': option.value === modelValue }"
+            :class="{ 'is-selected': isOptionSelected(option.value) }"
             @click.stop="selectOption(option)"
           >
-            <span class="option-check" v-if="option.value === modelValue">✓</span>
+            <span class="option-check" v-if="isOptionSelected(option.value)">✓</span>
             <span class="option-label">{{ option.label }}</span>
           </div>
-          <div v-if="options.length === 0" class="custom-select-empty">
+          <div v-if="effectiveOptions.length === 0" class="custom-select-empty">
             暂无选项
           </div>
         </div>
@@ -48,10 +48,12 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, useSlots } from 'vue'
 
 const props = defineProps({
-  modelValue: { type: [String, Number], default: '' },
+  modelValue: { type: [String, Number, Array], default: '' },
   placeholder: { type: String, default: '请选择' },
   options: { type: Array, default: () => [] },
-  disabled: { type: Boolean, default: false }
+  disabled: { type: Boolean, default: false },
+  // 多选：modelValue 为数组，选项可连续勾选、不自动收起
+  multiple: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -112,7 +114,20 @@ const selectRef = ref(null)
 const dropdownRef = ref(null)
 const dropdownStyle = ref({})
 
+const selectedValues = computed(() =>
+  props.multiple ? (Array.isArray(props.modelValue) ? props.modelValue : []) : []
+)
+
+const isOptionSelected = (value) =>
+  props.multiple ? selectedValues.value.includes(value) : value === props.modelValue
+
 const displayValue = computed(() => {
+  if (props.multiple) {
+    const chosen = effectiveOptions.value.filter(o => selectedValues.value.includes(o.value))
+    if (chosen.length === 0) return ''
+    if (chosen.length === 1) return chosen[0].label
+    return `已选 ${chosen.length} 项`
+  }
   const selected = effectiveOptions.value.find(o => o.value === props.modelValue)
   return selected ? selected.label : ''
 })
@@ -123,7 +138,7 @@ const updateDropdownPosition = () => {
   const viewportHeight = window.innerHeight
   const spaceBelow = viewportHeight - rect.bottom
   const spaceAbove = rect.top
-  const estimatedHeight = Math.min(props.options.length * 36 + 8, 240)
+  const estimatedHeight = Math.min(effectiveOptions.value.length * 36 + 8, 240)
 
   let top
   if (spaceBelow >= estimatedHeight + 4 || spaceBelow >= spaceAbove) {
@@ -150,6 +165,16 @@ const toggle = async () => {
 }
 
 const selectOption = (option) => {
+  if (props.multiple) {
+    const next = [...selectedValues.value]
+    const idx = next.indexOf(option.value)
+    if (idx >= 0) next.splice(idx, 1)
+    else next.push(option.value)
+    emit('update:modelValue', next)
+    emit('change', next)
+    // 多选不自动收起，便于连续勾选；点击外部再关闭
+    return
+  }
   emit('update:modelValue', option.value)
   emit('change', option.value)
   isOpen.value = false

@@ -386,6 +386,8 @@ class DataStore:
         self._ensure_certificates_table()
         self._ensure_certificates_columns()
         self._migrate_certificates_to_session_pk()
+        self._ensure_knowledge_columns()
+        self._ensure_users_columns()
 
     def _ensure_certificates_table(self):
         """确保证书表存在（兼容已有数据库，避免重新建库）
@@ -510,6 +512,46 @@ class DataStore:
                     self.db.execute(f"ALTER TABLE certificates ADD COLUMN {col} {ddl}")
         except Exception as e:
             print(f"[DB] 证书表字段迁移失败（可忽略，不影响既有字段）: {e}")
+
+    def _ensure_knowledge_columns(self):
+        """补齐知识库表新增字段（tags / fields / links）。
+
+        SQLite 无 ADD COLUMN IF NOT EXISTS，需自查 pragma。这 3 列以 JSON 承载
+        结构化内容：tags=标签数组、fields=按类型模板的结构化字段对象、links=关联
+        业务实体数组。缺失时 _filter_fields 会把这些字段丢掉，导致保存后结构化内容
+        整段消失——所以必须在启动时为既有库补齐。
+        """
+        required = {
+            'tags': 'TEXT',   # JSON 数组：标签
+            'fields': 'TEXT', # JSON 对象：结构化字段（guide/troubleshoot/case/tip/reference 各有模板）
+            'links': 'TEXT',  # JSON 数组：关联业务实体（project/player/org）
+        }
+        try:
+            rows = self.db.fetchall("PRAGMA table_info(knowledge)")
+            existing = {r['name'] for r in rows}
+            for col, ddl in required.items():
+                if col not in existing:
+                    self.db.execute(f"ALTER TABLE knowledge ADD COLUMN {col} {ddl}")
+        except Exception as e:
+            print(f"[DB] 知识库表字段迁移失败（可忽略，不影响既有字段）: {e}")
+
+    def _ensure_users_columns(self):
+        """补齐 users 表新增字段（is_active）。
+
+        启用/停用账号需要持久化状态。SQLite 无 ADD COLUMN IF NOT EXISTS，需自查
+        pragma 后追加。旧库缺失该列时，账号默认为启用态（1）。
+        """
+        required = {
+            'is_active': 'INTEGER DEFAULT 1',
+        }
+        try:
+            rows = self.db.fetchall("PRAGMA table_info(users)")
+            existing = {r['name'] for r in rows}
+            for col, ddl in required.items():
+                if col not in existing:
+                    self.db.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+        except Exception as e:
+            print(f"[DB] users 表字段迁移失败（可忽略，不影响既有字段）: {e}")
 
     def load_all_data(self) -> Dict:
         """加载所有数据（兼容 JSON 格式）"""
@@ -816,7 +858,7 @@ class DataStore:
             self._upsert('material_types', model._serialize(model._convert_to_db(mt)), conn)
 
     def _save_knowledge(self, knowledge: Dict, conn):
-        """保存知识库数据"""
+        """保存知识库数据（5 类语义化：guide / troubleshoot / case / tip / reference）。"""
         conn.execute("DELETE FROM knowledge")
         for ktype, items in knowledge.items():
             if isinstance(items, list):
@@ -839,10 +881,7 @@ class DataStore:
     def _save_templates(self, templates, conn):
         """保存模板数据
 
-        前端约定结构为 {"categories": [...], "items": [...]}，其中 categoryId /
-        fileName / size / icon 等字段超出 templates 表的列定义（表只有
-        id/type/name/content），硬塞会丢字段。因此整体以 JSON 存进 settings 表，
-        与 config 的存法保持一致，避免为几个字段去改表结构。
+        前端约定结构为 {"categories": [...], "items": [...]}。
         """
         if templates is None:
             return True
@@ -854,11 +893,7 @@ class DataStore:
         return True
 
     def _save_audit_logs(self, logs, conn):
-        """保存审计日志
-
-        审计日志是只增不改的追溯记录：当本次提交的日志为空、而库里已有记录时，
-        跳过清空，避免前端拿着一份过期快照回写就把审计轨迹整条抹掉。
-        """
+        """保存审计日志"""
         if not isinstance(logs, list):
             return True
 
@@ -885,19 +920,28 @@ class DataStore:
             )
 
     def _load_knowledge(self) -> Dict:
-        """加载知识库数据"""
-        knowledge = {'solutions': [], 'practices': [], 'training': []}
+        """加载知识库数据（5 类语义化结构，并迁移旧型 solutions/practices/training）。
+
+        旧库里 type 可能是 solutions/practices/training，统一映射到新 5 型：
+        solutions→guide / practices→tip / training→reference。前端 useKnowledgeStore
+        的 normalize() 也做同样映射，两端保持一致。
+        """
+        knowledge = {
+            'guide': [], 'troubleshoot': [], 'case': [], 'tip': [], 'reference': []
+        }
+        LEGACY_MAP = {'solutions': 'guide', 'practices': 'tip', 'training': 'reference'}
         items = self.knowledge.get_all()
         for item in items:
-            ktype = item.get('type', 'solutions')
-            if ktype in knowledge:
-                knowledge[ktype].append(item)
+            raw_type = item.get('type', 'guide')
+            target = LEGACY_MAP.get(raw_type, raw_type)
+            if target in knowledge:
+                knowledge[target].append(item)
         return knowledge
 
     def _load_config(self) -> Dict:
-        """加载配置数据"""
+        """加载配置数据（含资源中心可配置分类 resourceCategories）"""
         config = {}
-        rows = self.settings.find("key IN ('stages', 'projectTypes', 'orgTypes', 'statusList', 'financeTypes', 'incomeCategories', 'expenseCategories', 'stageMaterials')")
+        rows = self.settings.find("key IN ('stages', 'projectTypes', 'orgTypes', 'statusList', 'financeTypes', 'incomeCategories', 'expenseCategories', 'stageMaterials', 'resourceCategories')")
         for row in rows:
             key = row['key']
             value = row['value']
@@ -944,16 +988,11 @@ class DataStore:
         """加载模板数据
 
         返回结构与前端 TemplatesView 一致：{"categories": [...], "items": [...]}。
-        修复：此前返回 {"contracts": [], "forms": []}，与前端读写结构不符，
-        导致模板元数据永远读不回来（上传后刷新即消失）。
         """
         empty = {'categories': [], 'items': []}
         row = self.settings.get_by_id('templates')
         if not row or not row.get('value'):
             return empty
-        # 注意：settings 读取时会经过 Model._deserialize，以 { 或 [ 开头的字符串
-        # 已经被解析成对象了——此时 json.loads 会抛 TypeError，必须回退用原值。
-        # 这与 _load_config / _load_archive_config 的既有处理保持一致。
         try:
             data = json.loads(row['value'])
         except Exception:

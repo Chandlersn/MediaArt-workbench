@@ -3,6 +3,8 @@ Windows system file icon extractor module.
 Extracts native file type icons using Windows Shell API with high quality.
 """
 
+from __future__ import annotations  # 允许在 Pillow 缺失（Image=None）时仍能定义带注解的函数
+
 import ctypes
 import ctypes.wintypes
 import io
@@ -11,7 +13,12 @@ import platform
 import threading
 from typing import Optional, Tuple
 
-from PIL import Image, ImageEnhance, ImageFilter
+try:
+    from PIL import Image, ImageEnhance, ImageFilter
+    _PIL_AVAILABLE = True
+except Exception:  # Pillow 缺失时降级：图标功能不可用，但绝不能拖垮整个 archive 模块
+    Image = ImageEnhance = ImageFilter = None  # type: ignore
+    _PIL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +238,7 @@ def _extract_icon_to_png(hIcon, size: int = 48) -> Optional[bytes]:
 
 
 def get_file_icon(ext: str, size: int = 48) -> Optional[bytes]:
-    if platform.system() != 'Windows':
+    if platform.system() != 'Windows' or not _PIL_AVAILABLE:
         return None
 
     ext = ext.lstrip('.').lower()
@@ -264,7 +271,7 @@ def get_file_icon(ext: str, size: int = 48) -> Optional[bytes]:
 
 
 def get_folder_icon(size: int = 48) -> Optional[bytes]:
-    if platform.system() != 'Windows':
+    if platform.system() != 'Windows' or not _PIL_AVAILABLE:
         return None
 
     cache_key = f"__folder__{size}"

@@ -55,7 +55,9 @@ export function saveAuthData(accessToken, refreshToken, expiresIn, user) {
   localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, accessToken)
   localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, refreshToken)
 
-  const expiresAt = Date.now() + expiresIn * 1000
+  // 后端未返回有效 expires_in 时兜底为 0（视为"未知/已过期"），
+  // 避免 NaN 落盘后 parseInt 得到 NaN、判定逻辑失灵
+  const expiresAt = Date.now() + (Number(expiresIn) || 0) * 1000
   localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES, expiresAt.toString())
 
   if (user) {

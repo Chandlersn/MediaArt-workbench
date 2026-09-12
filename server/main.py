@@ -150,8 +150,13 @@ def main():
     logger.info(f"Base directory: {BASE_DIR}")
     
     try:
-        socketserver.TCPServer.allow_reuse_address = True
-        with socketserver.TCPServer(("", PORT), WorkbenchHTTPRequestHandler) as httpd:
+        # 多线程服务器：单线程 TCPServer 会被慢请求（扫盘/递归计数）整体阻塞，
+        # 导致前端并发请求排队超时、代理层直接报 500。改用每请求一线程。
+        class ThreadingWorkbenchServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        with ThreadingWorkbenchServer(("", PORT), WorkbenchHTTPRequestHandler) as httpd:
             logger.info(f"Server running at http://localhost:{PORT}")
             httpd.serve_forever()
     except KeyboardInterrupt:

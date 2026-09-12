@@ -17,8 +17,9 @@
 - **多项目并行不打架**：项目、选手、机构互相关联，点项目就能看到底下挂了哪些选手和机构，点机构能跳回它的所有项目。
 - **财务一眼看清**：收支按项目分类，趋势和占比直接出图表，月底不用再手算。
 - **归档不再丢文件**：按项目结构自动归档，文件显示系统真实图标（Word 就是 Word 图标），删改都在权限内留痕。
+- **全局搜索**：项目、选手、机构、知识库一处检索，不用挨个模块翻。
 - **清单式筹备**：每个项目带一份准备清单，逐项勾掉，切换项目互不影响、各自保存。
-- **角色权限**：管理员 / 编辑 / 查看三种角色，团队共用一套数据也不怕误改。
+- **角色权限**：管理员 / 编辑 / 查看三种角色，权限按「模块 × 动作」精细配置，团队共用一套数据也不怕误改。
 
 ## 功能模块一览
 
@@ -31,30 +32,54 @@
 | 财务管理 | 收支记录、按项目分类、趋势与占比图表 |
 | 归档管理 | 按项目结构自动归档、系统真实图标、增删改查 |
 | 素材库 | 文件资产上传与管理、在线预览 |
-| 知识库 | 解决方案 / 最佳实践 / 培训资料沉淀 |
+| 知识库 | 五类知识沉淀（指南 / 排障 / 案例 / 经验 / 资料），带结构化模板 |
+| 全局搜索 | 跨模块检索项目、选手、机构、知识 |
+| 通知中心 | 系统消息与提醒 |
 | 检查清单 | 每个项目一份筹备清单，逐项勾选、各自保存 |
 | 证书台账 | 编号规则模板、批量导入、按导入会话管理 |
 | 模板 / 资料配置 | 合同表单模板、各阶段所需资料定义 |
-| 用户与权限 | 管理员 / 编辑 / 查看三角色（RBAC） |
+| 用户与权限 | 三角色（admin / editor / viewer）× 模块 × 动作的权限矩阵 |
 | 操作日志 | 关键操作审计追踪 |
 
 ## 适合谁 · 不适合谁
 
-- ✅ **适合**：艺术节、比赛、展演、培训等**有「多项目 + 多选手 + 多机构 + 要收资料 + 要对账」特征的活动的组织团队**。
-- ⚠️ **不适合**：纯个人待办、纯文档协作（这类用笔记 / 网盘更轻）；当前也不含在线报名、票务等面向 C 端的功能——它是内部组织管理视角。
+- **适合**：艺术节、比赛、展演、培训等有「多项目 + 多选手 + 多机构 + 要收资料 + 要对账」特征的活动的组织团队。
+- **不适合**：纯个人待办、纯文档协作（这类用笔记 / 网盘更轻）；当前也不含在线报名、票务等面向 C 端的功能——它是内部组织管理视角。
 
-## 极简上手
+## 快速开始
 
-环境：Node.js 16+ 与 Python 3.8+。
+环境要求：Node.js 18+（Vite 5 需要）、Python 3.8+。
 
 ```bash
+# 1. 安装依赖
 npm install
 pip install -r requirements.txt
-python server.py      # 后端，http://localhost:8080
-npm run dev           # 前端开发服务器（可选，纯 Web 也可直接跑后端托管）
+
+# 2. 初始化管理员账号（全新部署必做，见下方说明）
+python scripts/init_admin.py
+
+# 3. 启动后端 API 服务（端口 8080）
+python -m server.main
+
+# 4. 另开一个终端，启动前端（端口 3004）
+npm run dev
 ```
 
-浏览器打开 http://localhost:8080 即可。首次启动自动创建管理员账号 `admin`，随机密码写在服务端日志和 `data/initial_password.txt`，登录后请改密。
+浏览器打开 **http://localhost:3004** 。前端已把 `/api` 代理到后端，所以开发时只访问这一个地址即可。
+
+Windows 用户也可以直接双击 **`启动工作台.bat`**，它会同时拉起后端和前端。
+
+### 关于管理员账号（重要）
+
+数据库在首次运行时是空的，而注册接口需要管理员权限才能调用——所以**全新部署必须先创建管理员**：
+
+```bash
+python scripts/init_admin.py                     # 创建 admin，密码随机生成并打印
+python scripts/init_admin.py myadmin mypassword  # 指定用户名和密码
+python scripts/init_admin.py myadmin --force     # 账号已存在时重置密码
+```
+
+随机密码会同时写入 `data/initial_password.txt`（该文件不进仓库）。登录后请尽快改密。
 
 想打包成桌面应用：
 
@@ -63,36 +88,94 @@ npm run build:win     # Windows 安装包
 npm run build:mac     # macOS 应用
 ```
 
+## 目录结构
+
+```
+server/                  模块化后端（Python 标准库，零中间件）
+  main.py                入口：多线程 HTTP 服务（8080）
+  api/router.py          路由分发与统一鉴权门禁
+  auth/ permissions/     登录鉴权、JWT、权限矩阵
+  users/ projects/ players/ organizations/
+  finances/ knowledge/ materials/ archive/
+  notifications/ search/ system/
+  database/              SQLite 持久层（db.py + schema.sql + 迁移工具）
+  utils/                 鉴权中间件、JWT、权限、校验、XSS 防护
+src/                     前端（Vue 3 + Pinia + Vue Router + Vite）
+  views/ stores/ components/ services/ utils/
+scripts/                 工具脚本（init_admin.py、静态检查等）
+tests/python/            后端 pytest 用例
+data/                    运行时数据（SQLite 库），不进仓库
+```
+
 ## 系统架构
 
-整体是一条「前端 → 后端 → 存储」的清晰分层，后端用 Python 标准库实现，没有任何外部中间件：
-
 ```
-┌─────────────────────────────────────────────────┐
-│  浏览器 / Electron 桌面端                          │
-│  Vue 3 + Pinia + Vue Router（Vite 构建）           │
-└───────────────────────┬─────────────────────────┘
-                        │  HTTP / JSON（JWT 鉴权）
-┌───────────────────────┴─────────────────────────┐
-│  Python 后端（标准库 http.server，零中间件）        │
-│  ├─ 路由分发与统一鉴权门禁                          │
-│  ├─ 业务 API（项目 / 选手 / 机构 / 财务 / 归档 / 证书 …）│
-│  └─ SQLite 持久化（JSON 同步快照 + 分钟级备份）      │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  浏览器 / Electron 桌面端                        │
+│  Vue 3 + Pinia + Vue Router（Vite 构建）         │
+│  开发态：http://localhost:3004                  │
+└───────────────────┬───────────────────────────┘
+                    │  /api 代理 → HTTP / JSON（JWT 鉴权）
+┌───────────────────┴───────────────────────────┐
+│  Python 后端（标准库 http.server，多线程）        │
+│  ├─ 路由分发与统一鉴权门禁                        │
+│  ├─ 业务模块（项目 / 选手 / 机构 / 财务 / 归档 …）  │
+│  └─ SQLite 持久化（单文件，自带备份）             │
+│  监听：http://localhost:8080                    │
+└───────────────────────────────────────────────┘
 ```
 
-- **前端**：Vue 3（Composition API）+ Pinia + Vue Router + Vite，纯静态构建，由后端直接托管，无需独立前端服务器。
-- **后端**：Python 标准库 HTTP 服务，不依赖数据库服务 / 消息队列等外部组件，clone 下来就能跑。
-- **存储**：SQLite 单文件数据库，外加 `workbench_data.json` 同步快照与分钟级自动备份，迁移只需拷贝文件。
-- **鉴权**：JWT（access token 2 小时 / refresh 7 天）+ RBAC 三角色（admin / editor / viewer），接口层统一门禁，关键写操作带权限校验。
+- **前端**：Vue 3（Composition API）+ Pinia + Vue Router + Vite，纯静态构建。
+- **后端**：Python 标准库 HTTP 服务，多线程（每请求一线程），不依赖数据库服务 / 消息队列等外部组件，clone 下来装完依赖就能跑。
+- **存储**：SQLite 单文件数据库（`data/workbench.db`），连接按线程隔离，迁移只需拷贝文件。
+- **鉴权**：JWT（access token 7 天 / refresh 30 天，可按单机自用场景调整）+ 三角色 RBAC，接口层统一门禁。
 - **桌面端**：可经 Electron 打包为 Windows / macOS 应用，业务逻辑与 Web 端完全一致。
 
-> 更完整的 API 说明与目录结构见仓库内 `docs/`，启动后端后访问 `/api/docs` 查看交互式文档。
+> 更完整的 API 说明见 `docs/` 与 `server/swagger/openapi.yaml`；启动后端后可访问 `/api/docs` 查看交互式文档。
 
-## 关于这份代码
+## 权限模型
 
-- 用户数据（数据库、`assets/`、`resources/`、`MediaArt_Archives/` 等业务文件）**不进仓库**，已在 `.gitignore` 排除；
+权限不是「一个角色一个开关」，而是**角色 × 模块 × 动作**的矩阵：
+
+- 角色：`admin`（管理员）、`editor`（编辑）、`viewer`（查看）
+- 动作：`view`（查看）、`edit`（编辑，含新增与修改）、`delete`（删除）
+- `admin` 恒拥有全部权限，避免误操作把自己锁死；未知模块 / 未知动作一律按「拒绝」处理
+
+矩阵可在界面「用户管理 → 角色权限」里直接调整，配置落在 `config/role_permissions.json`。
+
+## 数据与隐私
+
+- 用户数据（SQLite 库、`assets/`、`resources/`、`MediaArt_Archives/` 等业务文件）**不进仓库**，已在 `.gitignore` 排除；
+- JWT 密钥等运行时配置同样不入库；
 - 你 clone 下来的是「空台子」，业务数据和素材请放到本地对应目录后使用。
+
+## 测试与质量检查
+
+```bash
+# 后端 pytest（鉴权、权限矩阵、校验、XSS 防护等）
+pytest tests/python/
+
+# 前端静态检查（内联样式、参数、死代码）
+npm run check
+
+# 代码风格
+npm run lint
+npm run format:check
+```
+
+## 常见问题
+
+**全新部署后登录提示账号不存在？**
+数据库为空，按上文「关于管理员账号」跑一次 `python scripts/init_admin.py`。
+
+**忘了管理员密码？**
+`python scripts/init_admin.py admin --force` 重置（会生成新随机密码并打印）。
+
+**改了后端 Python 代码没生效？**
+后端不会热重载，需要重启 `python -m server.main`。
+
+**端口被占用？**
+后端默认 8080、前端默认 3004。前端端口在 `vite.config.js` 中修改，后端端口在 `server/main.py` 中修改。
 
 ## 开源协议
 

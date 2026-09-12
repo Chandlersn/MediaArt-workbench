@@ -18,23 +18,34 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo 正在启动本地服务器...
-start "工作台服务器" python server.py
+REM 检查 Node 是否可用（前端开发服务器需要）
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo 错误: 未找到 Node.js，前端需要 Node.js 环境
+    echo.
+    pause
+    exit /b 1
+)
 
-REM 等待服务器启动
-timeout /t 3 /nobreak >nul
+echo 正在启动后端服务 (端口 8080)...
+start "工作台后端" cmd /k "python -m server.main"
+
+echo 正在启动前端服务 (端口 3004)...
+start "工作台前端" cmd /k "npm run dev"
+
+REM 等待服务启动
+timeout /t 4 /nobreak >nul
 
 echo 正在打开浏览器...
-start "" "http://localhost:8080"
+start "" "http://localhost:3004"
 
 echo.
 echo ========================================
-echo  服务器已启动: http://localhost:8080
-echo  素材目录: %~dp0assets
-echo  归档目录: %~dp0MediaArt_Archives
+echo  后端已启动: http://localhost:8080
+echo  前端已启动: http://localhost:3004
+echo  默认账号:   admin / admin123
 echo.
-echo  点击素材文件将使用本地软件打开
-echo  关闭此窗口将停止服务器
+echo  关闭「工作台后端 / 工作台前端」窗口将停止对应服务
 echo ========================================
 echo.
 pause

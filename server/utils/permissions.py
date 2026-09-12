@@ -1,265 +1,224 @@
 """
-权限管理模块
-定义角色权限配置和权限验证装饰器
+权限管理模块（统一角色-权限矩阵）
+
+模型：role -> module -> [actions]
+  - module：业务域（projects / organizations / players / finances / users /
+           knowledge / resources / settings）
+  - action：view(查看) / edit(编辑·新增·修改) / delete(删除)
+
+矩阵持久化在 config/role_permissions.json，启动时加载；文件不存在则使用
+DEFAULT_ROLE_MATRIX。管理员(admin)恒拥有全部权限，未知模块按"拒绝"处理(fail-safe)。
 """
-from functools import wraps
+
 import json
+import logging
+import os
+import copy
+from typing import Dict, List, Any
 
+logger = logging.getLogger(__name__)
 
-# ========== 角色定义 ==========
+# ========== 模块 / 动作定义 ==========
 
-# 角色权限等级（数字越大权限越高）
-ROLE_HIERARCHY = {
-    'admin': 100,    # 管理员：所有权限
-    'editor': 50,    # 编辑者：创建、读取、更新
-    'viewer': 10     # 查看者：只读
+# 业务模块（顺序即前端展示顺序）
+MODULES: List[str] = [
+    'projects',        # 项目
+    'organizations',   # 机构
+    'players',         # 选手（人员）
+    'finances',        # 财务
+    'users',           # 用户与权限
+    'knowledge',       # 知识库
+    'resources',       # 资源 / 归档
+    'settings',        # 系统设置
+]
+
+# 可执行动作
+ACTIONS: List[str] = ['view', 'edit', 'delete']
+
+# 模块中文名（前端展示）
+MODULE_LABELS: Dict[str, str] = {
+    'projects': '项目',
+    'organizations': '机构',
+    'players': '选手',
+    'finances': '财务',
+    'users': '用户与权限',
+    'knowledge': '知识库',
+    'resources': '资源与归档',
+    'settings': '系统设置',
 }
 
-# 角色对应的权限列表
-ROLE_PERMISSIONS = {
-    'admin': ['create', 'read', 'update', 'delete', 'manage_users', 'manage_config'],
-    'editor': ['create', 'read', 'update'],
-    'viewer': ['read']
+# 动作中文名（前端展示）
+ACTION_LABELS: Dict[str, str] = {
+    'view': '查看',
+    'edit': '编辑',
+    'delete': '删除',
 }
 
-# 角色显示名称
-ROLE_DISPLAY_NAMES = {
+# 角色显示名
+ROLE_DISPLAY_NAMES: Dict[str, str] = {
     'admin': '管理员',
     'editor': '编辑者',
-    'viewer': '查看者'
+    'viewer': '查看者',
+}
+
+# 角色权限等级（数值越大权限越高），用于层级判断
+ROLE_HIERARCHY: Dict[str, int] = {
+    'admin': 100,
+    'editor': 50,
+    'viewer': 10,
 }
 
 
-# ========== 权限验证函数 ==========
+# ========== 默认角色矩阵 ==========
 
-def get_role_permissions(role):
+def _full() -> List[str]:
+    return list(ACTIONS)
+
+
+def _view_edit() -> List[str]:
+    return ['view', 'edit']
+
+
+def _view_only() -> List[str]:
+    return ['view']
+
+
+DEFAULT_ROLE_MATRIX: Dict[str, Dict[str, List[str]]] = {
+    'admin': {m: _full() for m in MODULES},
+    'editor': {
+        'projects': _view_edit(),
+        'organizations': _view_edit(),
+        'players': _view_edit(),
+        'finances': _view_edit(),
+        'knowledge': _view_edit(),
+        'resources': _view_edit(),
+        'users': _view_only(),
+        'settings': _view_only(),
+    },
+    'viewer': {m: _view_only() for m in MODULES},
+}
+
+
+# ========== 持久化 ==========
+
+def _config_path() -> str:
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, 'config', 'role_permissions.json')
+
+
+def _validate_matrix(matrix: Any) -> bool:
+    """校验外部传入的矩阵结构是否合法。"""
+    if not isinstance(matrix, dict):
+        return False
+    for role, mods in matrix.items():
+        if role not in DEFAULT_ROLE_MATRIX:
+            return False
+        if not isinstance(mods, dict):
+            return False
+        for mod, acts in mods.items():
+            if mod not in MODULES:
+                return False
+            if not isinstance(acts, list):
+                return False
+            for a in acts:
+                if a not in ACTIONS:
+                    return False
+    return True
+
+
+def load_role_matrix() -> Dict[str, Dict[str, List[str]]]:
+    """加载角色矩阵；文件缺失或解析失败则回退默认矩阵。"""
+    path = _config_path()
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if _validate_matrix(data):
+                return data
+            logger.warning('角色权限矩阵格式非法，回退默认配置')
+    except Exception as e:
+        logger.warning(f'加载角色权限矩阵失败: {e}，回退默认配置')
+    return _default_copy()
+
+
+def save_role_matrix(matrix: Dict[str, Dict[str, List[str]]]) -> bool:
+    """保存角色矩阵到配置文件。"""
+    if not _validate_matrix(matrix):
+        return False
+    path = _config_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(matrix, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f'保存角色权限矩阵失败: {e}')
+        return False
+
+
+def _default_copy() -> Dict[str, Dict[str, List[str]]]:
+    return copy.deepcopy(DEFAULT_ROLE_MATRIX)
+
+
+# 模块级缓存，避免每次请求重复读盘
+_ROLE_MATRIX_CACHE: Dict[str, Dict[str, List[str]]] = load_role_matrix()
+
+
+def get_role_matrix() -> Dict[str, Dict[str, List[str]]]:
+    """返回当前生效的矩阵（深拷贝，防止外部篡改缓存）。"""
+    return copy.deepcopy(_ROLE_MATRIX_CACHE)
+
+
+def reload_role_matrix() -> None:
+    """重新从磁盘加载矩阵（保存后调用以刷新缓存）。"""
+    global _ROLE_MATRIX_CACHE
+    _ROLE_MATRIX_CACHE = load_role_matrix()
+
+
+# ========== 权限判断 ==========
+
+def has_permission(role: str, module: str, action: str = None) -> bool:
+    """判断角色是否拥有某模块的某动作权限。
+
+    签名兼容两种写法：
+      - has_permission(role, module, action)
+      - has_permission(role, 'module:action')   # 单字符串形式
+    admin 恒为 True；未知模块 / 缺失动作返回 False（fail-safe）。
     """
-    获取指定角色的权限列表
+    if action is None and isinstance(module, str) and ':' in module:
+        module, action = module.split(':', 1)
 
-    Args:
-        role: 角色名称
-
-    Returns:
-        list: 权限列表
-    """
-    return ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS['viewer'])
-
-
-def has_permission(role, permission):
-    """
-    检查角色是否拥有指定权限
-
-    Args:
-        role: 角色名称
-        permission: 权限名称
-
-    Returns:
-        bool: 是否拥有权限
-    """
-    permissions = get_role_permissions(role)
-    return permission in permissions
+    if role == 'admin':
+        return True
+    if module not in MODULES or action not in ACTIONS:
+        return False
+    perms = _ROLE_MATRIX_CACHE.get(role, {})
+    return action in perms.get(module, [])
 
 
-def has_higher_role(user_role, required_role):
-    """
-    检查用户角色是否高于或等于要求角色
-
-    Args:
-        user_role: 用户角色
-        required_role: 要求的角色
-
-    Returns:
-        bool: 是否满足角色要求
-    """
-    user_level = ROLE_HIERARCHY.get(user_role, 0)
-    required_level = ROLE_HIERARCHY.get(required_role, 0)
-    return user_level >= required_level
+def get_role_permissions(role: str) -> List[str]:
+    """返回角色的全部权限，扁平化为 'module:action' 列表（兼容旧调用）。"""
+    perms = _ROLE_MATRIX_CACHE.get(role, {})
+    out = []
+    for mod, acts in perms.items():
+        for a in acts:
+            out.append(f'{mod}:{a}')
+    return out
 
 
-def get_role_level(role):
-    """
-    获取角色的权限等级
-
-    Args:
-        role: 角色名称
-
-    Returns:
-        int: 权限等级
-    """
-    return ROLE_HIERARCHY.get(role, 0)
+def get_user_effective_permissions(role: str) -> Dict[str, List[str]]:
+    """返回某角色在各模块上的可用动作（前端用于 UI 门控）。"""
+    return _ROLE_MATRIX_CACHE.get(role, {m: [] for m in MODULES})
 
 
-def is_admin(role):
-    """
-    检查是否为管理员
+def has_higher_role(user_role: str, required_role: str) -> bool:
+    """判断用户角色等级是否不低于要求角色。"""
+    return ROLE_HIERARCHY.get(user_role, 0) >= ROLE_HIERARCHY.get(required_role, 0)
 
-    Args:
-        role: 角色名称
 
-    Returns:
-        bool: 是否为管理员
-    """
+def is_admin(role: str) -> bool:
     return role == 'admin'
 
 
-def is_editor_or_above(role):
-    """
-    检查是否为编辑者或更高权限
-
-    Args:
-        role: 角色名称
-
-    Returns:
-        bool: 是否为编辑者或更高权限
-    """
-    return get_role_level(role) >= ROLE_HIERARCHY['editor']
-
-
-# ========== 权限装饰器 ==========
-
-def require_permission(permission):
-    """
-    权限验证装饰器
-
-    用法:
-        @require_permission('delete')
-        def delete_item(self):
-            # 只有 admin 角色可以执行
-            pass
-
-    Args:
-        permission: 所需权限名称
-    """
-    def decorator(handler_method):
-        @wraps(handler_method)
-        def wrapper(self, *args, **kwargs):
-            # 检查是否已通过认证（需要先使用 @require_auth 装饰器）
-            user_payload = getattr(self, 'user_payload', None)
-
-            if not user_payload:
-                self.send_response(401)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': '未认证，请先登录',
-                    'error': 'UNAUTHORIZED'
-                }, ensure_ascii=False).encode())
-                return
-
-            # 获取用户角色
-            user_role = user_payload.get('role', 'viewer')
-
-            # 检查权限
-            if not has_permission(user_role, permission):
-                self.send_response(403)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': f'权限不足，需要 {permission} 权限',
-                    'error': 'FORBIDDEN',
-                    'required_permission': permission,
-                    'user_role': user_role
-                }, ensure_ascii=False).encode())
-                return
-
-            # 权限验证通过，调用原始方法
-            return handler_method(self, *args, **kwargs)
-
-        return wrapper
-    return decorator
-
-
-def require_role(required_role):
-    """
-    角色验证装饰器（验证用户角色等级）
-
-    用法:
-        @require_role('editor')
-        def edit_item(self):
-            # editor 或 admin 角色可以执行
-            pass
-
-    Args:
-        required_role: 所需的最低角色等级
-    """
-    def decorator(handler_method):
-        @wraps(handler_method)
-        def wrapper(self, *args, **kwargs):
-            # 检查是否已通过认证
-            user_payload = getattr(self, 'user_payload', None)
-
-            if not user_payload:
-                self.send_response(401)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': '未认证，请先登录',
-                    'error': 'UNAUTHORIZED'
-                }, ensure_ascii=False).encode())
-                return
-
-            # 获取用户角色
-            user_role = user_payload.get('role', 'viewer')
-
-            # 检查角色等级
-            if not has_higher_role(user_role, required_role):
-                self.send_response(403)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': f'权限不足，需要 {ROLE_DISPLAY_NAMES.get(required_role, required_role)} 或更高权限',
-                    'error': 'FORBIDDEN',
-                    'required_role': required_role,
-                    'user_role': user_role
-                }, ensure_ascii=False).encode())
-                return
-
-            # 角色验证通过，调用原始方法
-            return handler_method(self, *args, **kwargs)
-
-        return wrapper
-    return decorator
-
-
-# ========== 权限检查辅助函数 ==========
-
-def check_permission_for_action(action_type):
-    """
-    根据操作类型返回所需权限
-
-    Args:
-        action_type: 操作类型 ('create', 'read', 'update', 'delete')
-
-    Returns:
-        str: 所需权限名称
-    """
-    permission_map = {
-        'create': 'create',
-        'read': 'read',
-        'update': 'update',
-        'delete': 'delete',
-        'manage_users': 'manage_users',
-        'manage_config': 'manage_config'
-    }
-    return permission_map.get(action_type, 'read')
-
-
-def get_user_permissions_from_payload(payload):
-    """
-    从 JWT payload 中获取用户的所有权限
-
-    Args:
-        payload: JWT payload
-
-    Returns:
-        list: 权限列表
-    """
-    if not payload:
-        return []
-
-    role = payload.get('role', 'viewer')
-    return get_role_permissions(role)
+def is_editor_or_above(role: str) -> bool:
+    return has_higher_role(role, 'editor')

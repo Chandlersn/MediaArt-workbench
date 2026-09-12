@@ -735,10 +735,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
 
         # 注：delete-org-material 的 DELETE 分支已移至 do_DELETE（原先写在这里永不执行）
 
-        # 获取缺失资料列表
-        if parsed.path == '/api/data/missing-materials':
-            self.get_missing_materials()
-            return
 
         # 审计日志 API
         if parsed.path == '/api/audit-logs' and self.command == 'GET':
@@ -1051,18 +1047,7 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
             self.open_archive_file(data.get('path', ''))
             return
 
-        if self.path == '/api/save-file':
-            # 安全修复：移除"允许未认证访问"分支
-            self.save_file_with_auth()
-            return
 
-        if self.path == '/api/copy-to-archive':
-            # 安全修复：移除"允许未认证访问"分支
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
-            self.copy_to_archive_with_auth(data.get('source', ''), data.get('destination', ''))
-            return
 
         # 数据存储 API
         if self.path == '/api/data/save':
@@ -1073,13 +1058,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
             self.save_data()
             return
 
-        if self.path == '/api/data/save-incremental':
-            is_valid, _, error = self._check_auth_and_permission('update')
-            if not is_valid:
-                self._send_permission_error(error)
-                return
-            self.save_incremental_data()
-            return
 
         if self.path == '/api/data/backup':
             # 安全修复：移除"允许未认证访问"分支
@@ -1147,9 +1125,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
             self.add_audit_log(data)
             return
 
-        if self.path == '/api/export':
-            self.handle_export_data()
-            return
 
         if self.path.startswith('/api/notifications'):
             self.handle_notifications()
@@ -1355,126 +1330,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
 
         self.send_error(404, 'Not Found')
 
-    def save_file(self):
-        """保存上传的文件到 assets 目录"""
-        try:
-            content_type = self.headers.get('Content-Type', '')
-            if not content_type.startswith('multipart/form-data'):
-                self.send_error(400, 'Expected multipart/form-data')
-                return
-
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-
-            print(f"上传文件: Content-Length={content_length}, boundary exist={('boundary=' in content_type)}")
-
-            boundary = content_type.split('boundary=')[1].encode()
-            parts = post_data.split(b'--' + boundary)
-
-            print(f"上传文件: 解析到 {len(parts)} 个 parts")
-
-            file_data = None
-            original_filename = None
-            new_filename = None
-            category = 'documents'
-
-            for i, part in enumerate(parts):
-                if not part or part == b'--\r\n' or part == b'--':
-                    continue
-
-                print(f"上传文件: 处理 part {i}, 长度={len(part)}, Content-Disposition exist={b'Content-Disposition' in part}")
-
-                if b'Content-Disposition' in part:
-                    disposition_start = part.find(b'Content-Disposition:')
-                    disposition_end = part.find(b'\r\n', disposition_start)
-                    disposition = part[disposition_start:disposition_end].decode()
-
-                    print(f"上传文件: part {i} disposition={disposition}")
-
-                    if b'filename="' in part:
-                        filename_start = part.find(b'filename="') + 10
-                        filename_end = part.find(b'"', filename_start)
-                        if filename_start > 9 and filename_end > filename_start:
-                            original_filename = part[filename_start:filename_end].decode()
-                            print(f"上传文件: part {i} original_filename={original_filename}")
-
-                        content_start = part.rfind(b'\r\n\r\n')
-                        print(f"上传文件: part {i} content_start={content_start}")
-                        if content_start != -1:
-                            content_start += 4
-                            file_data = part[content_start:]
-                            if file_data.endswith(b'\r\n'):
-                                file_data = file_data[:-2]
-                            print(f"上传文件: part {i} file_data长度={len(file_data) if file_data else 0}")
-                    elif 'name="filename"' in disposition:
-                        content_start = part.find(b'\r\n\r\n')
-                        if content_start != -1:
-                            content_start += 4
-                            content_end = len(part)
-                            if part.endswith(b'\r\n'):
-                                content_end -= 2
-                            new_filename = part[content_start:content_end].decode().strip()
-                    elif 'name="category"' in disposition:
-                        content_start = part.find(b'\r\n\r\n')
-                        if content_start != -1:
-                            content_start += 4
-                            content_end = len(part)
-                            if part.endswith(b'\r\n'):
-                                content_end -= 2
-                            category = part[content_start:content_end].decode().strip()
-
-            file_name = new_filename or original_filename
-
-            print(f"解析结果: file_data长度={len(file_data) if file_data else 0}, file_name={file_name}, category={category}")
-
-            if file_data and len(file_data) > 0 and file_name:
-                # 安全修复：净化文件名并校验最终路径不能越出素材目录
-                file_name = self._sanitize_filename(file_name)
-                if not file_name:
-                    self._send_json(400, {
-                        'success': False,
-                        'message': '非法的文件名',
-                        'error': 'INVALID_FILENAME'
-                    })
-                    return
-
-                category_dir = self._resolve_safe_path(ASSETS_DIR, category or '')
-                if category_dir is None:
-                    self._reject_unsafe_path(category)
-                    return
-                os.makedirs(category_dir, exist_ok=True)
-
-                file_path = self._resolve_safe_path(category_dir, file_name)
-                if file_path is None:
-                    self._reject_unsafe_path(file_name)
-                    return
-                print(f"保存文件: {file_path} (大小: {len(file_data)} bytes)")
-                with open(file_path, 'wb') as f:
-                    f.write(file_data)
-
-                print(f"文件保存成功: {file_path}")
-
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                response = json.dumps({
-                    'success': True,
-                    'message': 'File saved successfully',
-                    'path': f'{category}/{file_name}'
-                }, ensure_ascii=False)
-                self.wfile.write(response.encode('utf-8'))
-            else:
-                print(f"保存文件失败: file_data={file_data is not None}, file_name={file_name}")
-                self.send_error(400, 'No file data received')
-
-        except Exception as e:
-            print(f"保存文件异常: {e}")
-            import traceback
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    # ========== 权限验证辅助方法 ==========
-
     def _check_auth_and_permission(self, required_permission):
         """
         检查认证和权限的辅助方法
@@ -1629,26 +1484,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
         # 调用原始创建方法
         self.create_folder(folder_path)
 
-    def save_file_with_auth(self):
-        """保存文件（需要 editor 或更高权限）"""
-        is_valid, _, error = self._check_auth_and_permission('create')
-        if not is_valid:
-            self._send_permission_error(error)
-            return
-
-        # 调用原始保存方法
-        self.save_file()
-
-    def copy_to_archive_with_auth(self, source, destination):
-        """复制到归档（需要 editor 或更高权限）"""
-        is_valid, _, error = self._check_auth_and_permission('create')
-        if not is_valid:
-            self._send_permission_error(error)
-            return
-
-        # 调用原始复制方法
-        self.copy_to_archive(source, destination)
-
     def save_data_with_auth(self):
         """保存数据（需要 editor 或更高权限）"""
         is_valid, _, error = self._check_auth_and_permission('update')
@@ -1658,16 +1493,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
 
         # 调用原始保存方法
         self.save_data()
-
-    def save_incremental_data_with_auth(self):
-        """增量保存数据（需要 editor 或更高权限）"""
-        is_valid, _, error = self._check_auth_and_permission('update')
-        if not is_valid:
-            self._send_permission_error(error)
-            return
-
-        # 调用增量保存方法
-        self.save_incremental_data()
 
     def create_backup_with_auth(self):
         """创建备份（需要 editor 或更高权限）"""
@@ -1865,61 +1690,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self.send_error(500, str(e))
-
-    def copy_to_archive(self, source, destination):
-        """将文件从 assets 复制到归档目录"""
-        try:
-            # 安全修复：源与目标都必须落在各自基准目录内
-            source_path = self._resolve_safe_path(ASSETS_DIR, source)
-            dest_path = self._resolve_safe_path(ARCHIVES_DIR, destination)
-            if source_path is None or dest_path is None:
-                self._reject_unsafe_path(destination if dest_path is None else source)
-                return
-
-            print(f"复制文件: {source_path} -> {dest_path}")
-
-            # 检查源文件是否存在
-            if not os.path.exists(source_path):
-                print(f"源文件不存在: {source_path}")
-                print(f"尝试列出目录: {os.path.dirname(source_path)}")
-                if os.path.exists(os.path.dirname(source_path)):
-                    files = os.listdir(os.path.dirname(source_path))
-                    print(f"目录中的文件: {files}")
-                self.send_error(404, f'Source file not found: {source}')
-                return
-
-            # 确保目标目录存在
-            dest_dir = os.path.dirname(dest_path)
-            os.makedirs(dest_dir, exist_ok=True)
-
-            # 复制文件
-            import shutil
-            shutil.copy2(source_path, dest_path)
-
-            print(f"文件复制成功: {dest_path}")
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            response = json.dumps({
-                'success': True,
-                'message': 'File copied to archive',
-                'source': source,
-                'destination': destination
-            }, ensure_ascii=False)
-            self.wfile.write(response.encode('utf-8'))
-
-        except Exception as e:
-            print(f"复制文件失败: {e}")
-            import traceback
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    # 归档目录的一级子目录（与归档页的分类保持一致）
-    ARCHIVE_TOP_DIRS = (
-        '01_项目资料', '02_选手档案', '03_合作机构',
-        '04_财务管理', '05_知识资源', '06_系统备份',
-    )
 
     def _resolve_material_path(self, filepath):
         """
@@ -3126,51 +2896,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             import traceback
             print(f"保存 stageMaterials 配置失败：{e}")
-            print(f"详细错误：{traceback.format_exc()}")
-            self.send_error(500, str(e))
-
-    def get_missing_materials(self):
-        """获取缺失资料列表"""
-        try:
-            import sqlite3
-            db_file = os.path.join(DATA_DIR, 'workbench.db')
-
-            players = []
-
-            # 从 SQLite 读取选手数据
-            if os.path.exists(db_file):
-                conn = sqlite3.connect(db_file)
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-
-                cursor.execute('SELECT * FROM players')
-                rows = cursor.fetchall()
-
-                for row in rows:
-                    player = dict(row)
-                    if player.get('missingMaterials') and player.get('missingCount', 0) > 0:
-                        players.append({
-                            'id': player['id'],
-                            'name': player['name'],
-                            'stage': player.get('stage', ''),
-                            'missingCount': player.get('missingCount', 0),
-                            'missingTypes': player.get('missingTypes', [])
-                        })
-
-                conn.close()
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            response = json.dumps({
-                'success': True,
-                'players': players
-            }, ensure_ascii=False)
-            self.wfile.write(response.encode('utf-8'))
-
-        except Exception as e:
-            import traceback
-            print(f"获取缺失资料失败：{e}")
             print(f"详细错误：{traceback.format_exc()}")
             self.send_error(500, str(e))
 
@@ -4533,167 +4258,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
                 'lastModified': last_modified
             }, ensure_ascii=False).encode())
         except Exception as e:
-            self.send_error(500, str(e))
-
-    def save_incremental_data(self):
-        """增量保存数据"""
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            request_data = json.loads(post_data.decode('utf-8'))
-
-            client_version = request_data.get('version', 0)
-            changes = request_data.get('changes', [])
-            full_data = request_data.get('fullData')  # 用于降级
-
-            # 确保目录存在
-            os.makedirs(DATA_DIR, exist_ok=True)
-            data_file = os.path.join(DATA_DIR, 'workbench_data.json')
-
-            # 读取现有数据
-            current_data = {}
-            server_version = 0
-
-            if os.path.exists(data_file):
-                with open(data_file, 'r', encoding='utf-8') as f:
-                    current_data = json.load(f)
-                    server_version = current_data.get('_version_timestamp', 0)
-
-            # 确保所有数组字段存在且类型正确
-            for key in ['projects', 'organizations', 'players', 'finances', 'users', 'auditLogs']:
-                if key not in current_data:
-                    current_data[key] = []
-                elif not isinstance(current_data[key], list):
-                    print(f"修复数据类型: {key} 从 {type(current_data[key]).__name__} 转为 list")
-                    current_data[key] = []
-
-            # 版本冲突检测
-            if server_version > 0 and client_version > 0 and client_version < server_version:
-                # 客户端版本过旧，返回冲突
-                self.send_response(409)  # Conflict
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'conflict': True,
-                    'message': '数据版本冲突，请刷新后重试',
-                    'serverVersion': server_version
-                }, ensure_ascii=False).encode())
-                return
-
-            # 应用增量变更
-            if changes and len(changes) > 0:
-                for change in changes:
-                    path = change.get('path', '')
-                    value = change.get('value')
-                    change_type = change.get('type', 'set')
-
-                    if change_type == 'delete':
-                        self._delete_by_path(current_data, path)
-                    else:
-                        self._set_by_path(current_data, path, value)
-
-                print(f"增量保存: 应用了 {len(changes)} 个变更")
-            else:
-                # 没有变更，使用完整数据降级
-                if full_data:
-                    current_data = full_data
-                    print("增量保存: 使用完整数据降级")
-
-            # ========== 数据校验（增量保存暂时跳过）==========
-            # 注意：增量数据来自前端代理，校验可能导致误报
-            # 如需启用校验，请取消下面的注释
-            """
-            validation_errors = {}
-            if 'projects' in current_data:
-                for idx, project in enumerate(current_data['projects']):
-                    if not isinstance(project, dict):
-                        continue
-                    valid, errors = Validator.validate_all(project, FormSchemas.PROJECT)
-                    if not valid:
-                        validation_errors[f'projects[{idx}]'] = errors
-            if 'organizations' in current_data:
-                for idx, org in enumerate(current_data['organizations']):
-                    if not isinstance(org, dict):
-                        continue
-                    valid, errors = Validator.validate_all(org, FormSchemas.ORGANIZATION)
-                    if not valid:
-                        validation_errors[f'organizations[{idx}]'] = errors
-            if 'players' in current_data:
-                for idx, player in enumerate(current_data['players']):
-                    if not isinstance(player, dict):
-                        continue
-                    valid, errors = Validator.validate_all(player, FormSchemas.PLAYER)
-                    if not valid:
-                        validation_errors[f'players[{idx}]'] = errors
-            if 'finances' in current_data:
-                for idx, finance in enumerate(current_data['finances']):
-                    if not isinstance(finance, dict):
-                        continue
-                    valid, errors = Validator.validate_all(finance, FormSchemas.FINANCE)
-                    if not valid:
-                        validation_errors[f'finances[{idx}]'] = errors
-            if validation_errors:
-                print(f"增量保存校验失败: {validation_errors}")
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': '数据校验失败',
-                    'errors': validation_errors
-                }, ensure_ascii=False).encode())
-                return
-            """
-
-            # ========== XSS 防护 ==========
-            # 本地桌面应用无需 XSS 防护，直接保存原始数据
-            sanitized_data = current_data
-
-            # 更新版本号
-            new_version = int(time.time() * 1000)
-            sanitized_data['_version_timestamp'] = new_version
-
-            # 原子写入：先写入临时文件，再重命名
-            dir_name = os.path.dirname(data_file)
-            fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump(sanitized_data, f, ensure_ascii=False, indent=2)
-                # 原子替换
-                os.replace(temp_path, data_file)
-            except Exception:
-                # 清理临时文件
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-                raise
-
-            # 同步到 SQLite
-            try:
-                from server.database.db import get_data_store
-                data_store = get_data_store()
-                data_store.save_all_data(sanitized_data)
-                print(f"增量保存成功并同步到 SQLite: 版本 {new_version}")
-            except Exception as sync_err:
-                print(f"增量保存 JSON 成功，但同步到 SQLite 失败: {sync_err}")
-                import traceback
-                traceback.print_exc()
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                'success': True,
-                'message': '增量保存成功',
-                'version': new_version,
-                'changesApplied': len(changes)
-            }, ensure_ascii=False).encode())
-        except Exception as e:
-            print(f"增量保存失败: {e}")
-            import traceback
-            traceback.print_exc()
             self.send_error(500, str(e))
 
     def _set_by_path(self, obj, path, value):
@@ -6263,173 +5827,6 @@ class WorkbenchHandler(http.server.SimpleHTTPRequestHandler):
                     'finances': len(data.get('finances', [])),
                     'users': len(data.get('users', []))
                 }
-            }, ensure_ascii=False).encode())
-        except Exception as e:
-            print(f"导出数据失败: {e}")
-            import traceback
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_export_data(self):
-        """处理数据导出请求，支持 JSON 和 CSV 格式
-
-        请求体:
-            {
-                "dataType": "projects"|"players"|"organizations"|"finance"|"knowledge",
-                "format": "csv"|"json",
-                "fields": ["name", "type", ...]  // 可选，指定导出字段
-            }
-        """
-        import csv
-        from io import StringIO
-
-        try:
-            # 读取请求体
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length == 0:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': '请求体为空'
-                }, ensure_ascii=False).encode())
-                return
-
-            post_data = self.rfile.read(content_length)
-            body = json.loads(post_data.decode('utf-8'))
-
-            data_type = body.get('dataType', '')
-            export_format = body.get('format', 'json')
-            fields = body.get('fields', [])
-
-            # 数据类型映射：前端 key -> 数据文件中的 key
-            type_mapping = {
-                'projects': 'projects',
-                'players': 'players',
-                'organizations': 'organizations',
-                'finance': 'finances',
-                'knowledge': 'knowledge'
-            }
-
-            data_key = type_mapping.get(data_type)
-            if not data_key:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'success': False,
-                    'message': f'不支持的数据类型: {data_type}，支持的类型: {", ".join(type_mapping.keys())}'
-                }, ensure_ascii=False).encode())
-                return
-
-            # 从数据文件读取数据
-            data = self._read_json_data()
-            records = data.get(data_key, [])
-
-            if not isinstance(records, list):
-                records = []
-
-            # 按 fields 过滤字段
-            if fields and isinstance(fields, list) and len(fields) > 0:
-                filtered_records = []
-                for record in records:
-                    if isinstance(record, dict):
-                        filtered_record = {}
-                        for field in fields:
-                            if field in record:
-                                value = record[field]
-                                # 将列表和字典转为 JSON 字符串以便 CSV 导出
-                                if isinstance(value, (list, dict)):
-                                    value = json.dumps(value, ensure_ascii=False)
-                                filtered_record[field] = value
-                        filtered_records.append(filtered_record)
-                    else:
-                        filtered_records.append(record)
-                records = filtered_records
-
-            # JSON 格式导出
-            if export_format == 'json':
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps(records, ensure_ascii=False, indent=2).encode())
-                return
-
-            # CSV 格式导出
-            if export_format == 'csv':
-                if not records:
-                    # 空数据，返回只有表头的 CSV
-                    output = StringIO()
-                    if fields:
-                        writer = csv.writer(output)
-                        writer.writerow(fields)
-                    csv_content = output.getvalue()
-                    output.close()
-                else:
-                    # 收集所有字段（优先使用指定的 fields，否则从数据中提取）
-                    if fields:
-                        csv_fields = fields
-                    else:
-                        csv_fields = []
-                        for record in records:
-                            if isinstance(record, dict):
-                                for key in record.keys():
-                                    if key not in csv_fields:
-                                        csv_fields.append(key)
-
-                    output = StringIO()
-                    writer = csv.writer(output)
-                    writer.writerow(csv_fields)
-
-                    for record in records:
-                        if isinstance(record, dict):
-                            row = []
-                            for field in csv_fields:
-                                value = record.get(field, '')
-                                if isinstance(value, (list, dict)):
-                                    value = json.dumps(value, ensure_ascii=False)
-                                if value is None:
-                                    value = ''
-                                row.append(str(value))
-                            writer.writerow(row)
-                        else:
-                            writer.writerow([str(record)])
-
-                    csv_content = output.getvalue()
-                    output.close()
-
-                # 生成文件名
-                filename = f'{data_type}_{time.strftime("%Y%m%d_%H%M%S")}.csv'
-
-                self.send_response(200)
-                self.send_header('Content-type', 'text/csv; charset=utf-8')
-                self.send_header(
-                    'Content-Disposition',
-                    f'attachment; filename="{filename}"'
-                )
-                self.end_headers()
-                # 添加 BOM 以支持 Excel 正确识别 UTF-8
-                self.wfile.write(b'\xef\xbb\xbf')
-                self.wfile.write(csv_content.encode('utf-8'))
-                return
-
-            # 不支持的格式
-            self.send_response(400)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                'success': False,
-                'message': f'不支持的导出格式: {export_format}，支持: json, csv'
-            }, ensure_ascii=False).encode())
-
-        except json.JSONDecodeError:
-            self.send_response(400)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                'success': False,
-                'message': '请求体 JSON 格式错误'
             }, ensure_ascii=False).encode())
         except Exception as e:
             print(f"导出数据失败: {e}")

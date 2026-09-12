@@ -4,9 +4,11 @@ import { useChecklistStore } from '../stores/checklist'
 import { useProjectStore } from '../stores/project'
 import PageHeader from '../components/PageHeader.vue'
 import CustomSelect from '../components/CustomSelect.vue'
+import { useConfirmDialog } from '../composables/useConfirmDialog'
 
 const checklistStore = useChecklistStore()
 const projectStore = useProjectStore()
+const { alert } = useConfirmDialog()
 
 const newItems = ref({})  // cardId -> input text
 const showResetConfirm = ref(false)
@@ -67,7 +69,7 @@ const handleAddItemKeydown = (e, cardId) => {
 const handleRemoveItem = async (cardId, itemIndex) => {
   const ok = await checklistStore.removeItem(cardId, itemIndex)
   if (!ok) {
-    alert('删除失败，请重试')
+    alert({ title: '删除失败', message: '删除失败，请重试', type: 'danger' })
   }
 }
 

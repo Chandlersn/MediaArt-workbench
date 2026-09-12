@@ -517,10 +517,13 @@ const uploadMaterial = async () => {
   }
 
   try {
-    const result = await fetchWithAuth('/api/upload', {
+    // fetchWithAuth 返回的是 Response，必须 json() 后才能取 success/message，
+    // 否则恒为 undefined、成功也会被判成失败（此处曾漏写 .json()）。
+    const response = await fetchWithAuth('/api/upload', {
       method: 'POST',
       body: formData
     })
+    const result = await response.json()
 
     if (result.success || result.message?.includes('uploaded successfully')) {
       success('资料上传成功')
@@ -548,13 +551,22 @@ const uploadMaterial = async () => {
   }
 }
 
-const downloadMaterial = (material) => {
-  // 创建下载链接
-  const link = document.createElement('a')
-  link.href = `/api/download-player-material?playerName=${encodeURIComponent(player.value.name)}&fileName=${encodeURIComponent(material.name)}`
-  link.download = material.name
-  link.target = '_blank'
-  link.click()
+const downloadMaterial = async (material) => {
+  try {
+    const url = `/api/download-player-material?playerName=${encodeURIComponent(player.value.name)}&fileName=${encodeURIComponent(material.name)}`
+    const blob = await getBlob(url)
+    const objUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objUrl
+    link.download = material.name
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(objUrl)
+  } catch (e) {
+    console.error('下载资料失败:', e)
+    error(e?.message || '下载失败，请重试')
+  }
 }
 
 // 文件预览：媒体加载、鉴权与文本提取统一交给 FilePreviewPanel 组件
@@ -569,7 +581,7 @@ const previewMaterial = (material) => {
   showPreview.value = true
 }
 
-// TODO: 实现下载功能，需要后端提供 /api/delete-player-material 接口
+// 删除选手资料：后端 /api/delete-player-material 已提供
 const deleteMaterial = async (index) => {
   const confirmed = await confirm({
     title: '删除确认',
@@ -581,7 +593,7 @@ const deleteMaterial = async (index) => {
 
   const material = player.value.materials[index]
   try {
-    const result = await fetchWithAuth('/api/delete-player-material', {
+    const response = await fetchWithAuth('/api/delete-player-material', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -589,6 +601,7 @@ const deleteMaterial = async (index) => {
         fileName: material.name
       })
     })
+    const result = await response.json()
 
     if (result.success) {
       success('删除成功')

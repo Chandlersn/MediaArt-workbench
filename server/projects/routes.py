@@ -28,7 +28,7 @@ class ProjectsRouter:
         method = request_context.get('method', 'GET')
 
         try:
-            if method == 'GET' and path == '/api/projects/list':
+            if method == 'GET' and path in ('/api/projects', '/api/projects/list'):
                 return self.list_projects(request_context)
             elif method == 'GET' and path.startswith('/api/projects/'):
                 project_id = path.split('/')[-1]
@@ -55,7 +55,7 @@ class ProjectsRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
 
-    @require_auth
+    @require_permission('projects', 'view')
     def list_projects(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Get all projects with pagination."""
         query_params = request_context.get('query_params', {})
@@ -95,7 +95,7 @@ class ProjectsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_auth
+    @require_permission('projects', 'view')
     def get_project(self, project_id, request_context=None):
         """Get a specific project by ID."""
         project = data_store.projects.get_by_id(project_id)
@@ -111,7 +111,7 @@ class ProjectsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('create')
+    @require_permission('projects', 'edit')
     def create_project(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new project."""
         body = request_context.get('body', b'')
@@ -124,7 +124,7 @@ class ProjectsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('update')
+    @require_permission('projects', 'edit')
     def update_project(self, project_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """Update a project."""
         body = request_context.get('body', b'')
@@ -140,7 +140,7 @@ class ProjectsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('delete')
+    @require_permission('projects', 'delete')
     def delete_project(self, project_id, request_context=None):
         """Delete a project."""
         success = data_store.projects.delete(project_id)

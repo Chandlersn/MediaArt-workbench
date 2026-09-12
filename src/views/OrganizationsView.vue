@@ -88,9 +88,11 @@ import { parseOrgIds } from '../utils/dataHelpers'
 import Pagination from '../components/Pagination.vue'
 import { get } from '../services/http.js'
 import CustomSelect from '../components/CustomSelect.vue'
+import { useConfirmDialog } from '../composables/useConfirmDialog'
 
 const orgStore = useOrganizationStore()
 const projectStore = useProjectStore()
+const { confirm } = useConfirmDialog()
 
 const searchKeyword = ref('')
 const filterType = ref('all')
@@ -200,7 +202,12 @@ const clearSelection = () => {
 
 const batchDelete = async () => {
   const count = selectedIds.value.size
-  if (!confirm(`确定要删除选中的 ${count} 个机构吗？此操作不可撤销。`)) return
+  const ok = await confirm({
+    title: '删除确认',
+    message: `确定要删除选中的 ${count} 个机构吗？此操作不可撤销。`,
+    type: 'danger'
+  })
+  if (!ok) return
   for (const id of selectedIds.value) {
     await orgStore.deleteOrganization(id)
   }
