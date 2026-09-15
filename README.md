@@ -17,7 +17,7 @@
 - **多项目并行不打架**：项目、选手、机构互相关联，点项目就能看到底下挂了哪些选手和机构，点机构能跳回它的所有项目。
 - **财务一眼看清**：收支按项目分类，趋势和占比直接出图表，月底不用再手算。
 - **归档不再丢文件**：按项目结构自动归档，文件显示系统真实图标（Word 就是 Word 图标），删改都在权限内留痕。
-- **全局搜索**：项目、选手、机构、知识库一处检索，不用挨个模块翻。
+- **全局搜索 + 多维筛选**：项目、选手、机构、知识库、文件一处检索；还能按「模块 / 类型 / 归属实体 / 日期区间」组合筛选，结果按模块分组并带命中计数。
 - **清单式筹备**：每个项目带一份准备清单，逐项勾掉，切换项目互不影响、各自保存。
 - **角色权限**：管理员 / 编辑 / 查看三种角色，权限按「模块 × 动作」精细配置，团队共用一套数据也不怕误改。
 
@@ -33,13 +33,14 @@
 | 归档管理 | 按项目结构自动归档、系统真实图标、增删改查 |
 | 素材库 | 文件资产上传与管理、在线预览 |
 | 知识库 | 五类知识沉淀（指南 / 排障 / 案例 / 经验 / 资料），带结构化模板 |
-| 全局搜索 | 跨模块检索项目、选手、机构、知识 |
-| 通知中心 | 系统消息与提醒 |
+| 全局搜索 | 跨模块检索；模块 / 类型 / 归属实体 / 日期多维筛选，带命中计数 |
+| 通知中心 | 系统消息与提醒（未读数、标记已读、删除） |
 | 检查清单 | 每个项目一份筹备清单，逐项勾选、各自保存 |
 | 证书台账 | 编号规则模板、批量导入、按导入会话管理 |
 | 模板 / 资料配置 | 合同表单模板、各阶段所需资料定义 |
 | 用户与权限 | 三角色（admin / editor / viewer）× 模块 × 动作的权限矩阵 |
-| 操作日志 | 关键操作审计追踪 |
+| 操作日志 | 关键操作审计追踪（含时间 / 操作人 / 描述 / 对象 / IP），支持一键清除 |
+| 系统设置 | 运行状态（运行时长 / 数据文件大小 / 运行平台与环境）、目录配置、数据导出与备份恢复 |
 
 ## 适合谁 · 不适合谁
 
@@ -95,11 +96,14 @@ server/                  模块化后端（Python 标准库，零中间件）
   main.py                入口：多线程 HTTP 服务（8080）
   api/router.py          路由分发与统一鉴权门禁
   auth/ permissions/     登录鉴权、JWT、权限矩阵
-  users/ projects/ players/ organizations/
-  finances/ knowledge/ materials/ archive/
-  notifications/ search/ system/
-  database/              SQLite 持久层（db.py + schema.sql + 迁移工具）
-  utils/                 鉴权中间件、JWT、权限、校验、XSS 防护
+  users/                 用户与角色管理
+  projects/ organizations/ players/   实体只读接口（列表 / 详情）
+  materials/             项目 / 机构 / 选手资料扫描、下载、删除、批量导入
+  archive/               归档读写与搜索；taxonomy.py 为归档分类的唯一权威定义
+  resources/             数据全量 load/save、备份恢复、素材库、文件上下行
+  notifications/ search/ system/       通知、全局搜索、系统与设置
+  database/              SQLite 持久层（db.py + schema.sql + maintenance.py）
+  utils/                 鉴权中间件、JWT、权限、校验、回收站、XSS 防护
 src/                     前端（Vue 3 + Pinia + Vue Router + Vite）
   views/ stores/ components/ services/ utils/
 scripts/                 工具脚本（init_admin.py、静态检查等）
@@ -128,10 +132,11 @@ data/                    运行时数据（SQLite 库），不进仓库
 - **前端**：Vue 3（Composition API）+ Pinia + Vue Router + Vite，纯静态构建。
 - **后端**：Python 标准库 HTTP 服务，多线程（每请求一线程），不依赖数据库服务 / 消息队列等外部组件，clone 下来装完依赖就能跑。
 - **存储**：SQLite 单文件数据库（`data/workbench.db`），连接按线程隔离，迁移只需拷贝文件。
+- **写入模型**：业务数据由前端整体持有，统一经 `POST /api/data/save` 做**全量快照落库**（单事务提交、逐表防误删守卫）。只保留这一套写路径，避免多套实现并存导致"改一处、另一处不生效"。
 - **鉴权**：JWT（access token 7 天 / refresh 30 天，可按单机自用场景调整）+ 三角色 RBAC，接口层统一门禁。
 - **桌面端**：可经 Electron 打包为 Windows / macOS 应用，业务逻辑与 Web 端完全一致。
 
-> 更完整的 API 说明见 `docs/` 与 `server/swagger/openapi.yaml`；启动后端后可访问 `/api/docs` 查看交互式文档。
+> 接口定义以 `server/swagger/openapi.yaml`（OpenAPI）为准；更多说明见 `docs/`。
 
 ## 权限模型
 

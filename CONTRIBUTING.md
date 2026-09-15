@@ -7,7 +7,7 @@
 1. Fork 并克隆仓库
 2. 安装前端依赖：`npm install`
 3. 安装 Python 依赖：`pip install -r requirements.txt`
-4. 启动后端：`python server.py`
+4. 启动后端：`python -m server.main`
 5. 启动前端开发服务器：`npm run dev`
 6. 浏览器访问 http://localhost:3004
 

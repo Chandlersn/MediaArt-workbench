@@ -35,7 +35,7 @@
 安装目录/
 ├── 媒体艺术展览工作台.exe  # 主程序
 ├── resources/
-│   ├── server.py          # Python后端服务
+│   ├── server/            # Python 后端服务（模块化，入口 server/main.py）
 │   ├── data/              # 数据存储
 │   ├── assets/            # 素材文件
 │   ├── resources/         # 资源文件

@@ -3,7 +3,7 @@
 ## 测试环境信息
 - **项目路径**: d:\个人开发\个人工作台
 - **前端**: Vue 3 + Vite
-- **后端**: Python server.py
+- **后端**: Python `server/main.py`（模块化入口，原单体 `server.py` 已废弃删除）
 - **数据库**: SQLite (workbench.db) + JSON (workbench_data.json)
 - **端口**: 8080
 
@@ -15,7 +15,7 @@
 **目标**: 验证系统能够正常启动运行
 
 1. **启动后端服务**
-   - 执行: `python server.py`
+   - 执行: `python -m server.main`
    - 验证: 服务启动成功，端口 8080 监听
 
 2. **启动前端开发服务器**
