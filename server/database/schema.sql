@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS organizations (
     phone TEXT,
     address TEXT,
     note TEXT,
-    coop_count INTEGER DEFAULT 0,
     created_at TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

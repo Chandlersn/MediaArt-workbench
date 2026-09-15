@@ -49,11 +49,15 @@ const getFileType = (filename) => {
   return 'other'
 }
 
-// 文件是否归属某分类：有 folder 按路径前缀，否则按扩展名兜底
+// 文件是否落在某个分类的物理文件夹内
+const inAnyCategoryFolder = (p) => categories.value.some(c => c.folder && (p.startsWith(c.folder + '/') || p.includes('/' + c.folder + '/')))
+
+// 文件是否归属某分类：优先按物理文件夹归属；未落入任何分类文件夹的文件（如根目录）按扩展名类型兜底
 const matchCategory = (file, cat) => {
   const p = file.path || file.name || ''
-  if (cat.folder) return p.startsWith(cat.folder + '/') || p.includes('/' + cat.folder + '/')
-  return getFileType(file.name) === cat.id
+  if (cat.folder && (p.startsWith(cat.folder + '/') || p.includes('/' + cat.folder + '/'))) return true
+  if (!inAnyCategoryFolder(p)) return getFileType(file.name) === cat.id
+  return false
 }
 
 const typeMeta = (filename) => {
@@ -186,7 +190,9 @@ const submitUpload = async () => {
   if (!uploadFile.value) return
   const formData = new FormData()
   formData.append('file', uploadFile.value)
+  // 未选分类时，按文件扩展名自动落位到对应类型文件夹（避免散落在根目录）
   const cat = categories.value.find(c => c.id === uploadCategory.value)
+    || categories.value.find(c => c.id === getFileType(uploadFile.value.name))
   formData.append('targetPath', cat?.folder || '')
   try {
     const response = await fetchWithAuth('/api/upload', { method: 'POST', body: formData })

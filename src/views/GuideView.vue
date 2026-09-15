@@ -600,6 +600,9 @@ const modules = [
 .section-header {
   display: flex;
   align-items: center;
+  /* ⚠️ 必须显式声明：全局 style.css 的 .section-header 是 space-between，
+     本组件 scoped 规则若不覆盖，图标与标题会被拉到两端。这里要让标题紧贴图标靠左。 */
+  justify-content: flex-start;
   gap: 12px;
   margin-bottom: 20px;
 }

@@ -482,20 +482,9 @@ body {
     box-sizing: border-box;
 }
 
-.page {
-    display: none !important;
-    visibility: hidden !important;
-    width: 100%;
-    height: 0;
-    overflow: hidden;
-}
-
-.page.active {
-    display: block !important;
-    visibility: visible !important;
-    height: auto;
-    overflow: visible;
-}
+/* 注：原此处有 .page / .page.active 两条规则（display:none/block !important 切换）。
+   全项目已无元素使用裸 `page` 类（旧标签页机制遗留），且 !important 易误伤
+   （任何 class="page" 的元素都会被强制隐藏），故移除。备份见 backup_style_css_*。 */
 
 @keyframes fadeIn {
     from { opacity: 0; }

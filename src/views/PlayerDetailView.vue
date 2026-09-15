@@ -247,7 +247,7 @@
 import { computed, onMounted, ref, reactive, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore, useProjectStore, useOrganizationStore } from '../stores'
-import { get, fetchWithAuth } from '../services/http.js'
+import { get, fetchWithAuth, getBlob } from '../services/http.js'
 import * as dataService from '../services/dataService.js'
 import CustomSelect from '../components/CustomSelect.vue'
 import FilePreviewPanel from '../components/FilePreviewPanel.vue'
@@ -273,6 +273,7 @@ const advanceForm = ref({
 
 const materialType = ref('')
 const uploadStage = ref('')
+const uploadTitle = ref('')
 const selectedFile = ref(null)
 const materialFileInput = ref(null)
 const materialTypes = ref([])
@@ -512,6 +513,9 @@ const uploadMaterial = async () => {
   formData.append('file', selectedFile.value)
   formData.append('playerName', player.value.name)
   formData.append('materialType', materialType.value)
+  if (uploadTitle.value.trim()) {
+    formData.append('title', uploadTitle.value.trim())
+  }
   if (uploadStage.value) {
     formData.append('stage', uploadStage.value)
   }
@@ -538,6 +542,7 @@ const uploadMaterial = async () => {
       // 清空选择
       materialType.value = ''
       uploadStage.value = ''
+      uploadTitle.value = ''
       selectedFile.value = null
       if (materialFileInput.value) {
         materialFileInput.value.value = ''
@@ -619,6 +624,20 @@ const deleteMaterial = async (index) => {
 </script>
 
 <style scoped>
+.title-input {
+  flex: 1 1 170px;
+  min-width: 120px;
+  padding: 6px 10px;
+  border: 1px solid var(--line, #d8cfc0);
+  border-radius: 6px;
+  background: var(--paper, #fbf8f1);
+  color: var(--ink, #2b2b2b);
+  font-size: 13px;
+}
+.title-input:focus {
+  outline: none;
+  border-color: var(--cinnabar, #b03a2e);
+}
 .page-header {
   display: flex;
   justify-content: space-between;

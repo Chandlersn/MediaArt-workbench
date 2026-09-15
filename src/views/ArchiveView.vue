@@ -10,13 +10,27 @@ const { confirm, prompt } = useConfirmDialog()
 
 // 归档根目录下的文件夹即"分类"。本地目录名带序号前缀（如 01_项目资料），
 // 展示时去掉前缀；描述仅对内置 6 类保留文案，其余用默认。
-const CATEGORY_DESCRIPTIONS = {
-  '01_项目资料': '策划文档、宣传物料、选手资料等',
-  '02_选手档案': '个人信息、参赛历程、作品集等',
-  '03_合作机构': '合作协议、往来函件、结算单据',
-  '04_财务管理': '收入凭证、支出凭证、财务报表',
+// 分类描述以后端单一权威定义为准（server/archive/taxonomy.py），
+// 这里保留一份兜底文案，接口不可用时仍能正常展示。
+const CATEGORY_DESCRIPTIONS_FALLBACK = {
+  '01_项目资料': '策划文档、宣传物料、现场记录、项目成果',
+  '02_选手档案': '个人信息、参赛记录、作品、获奖证书、照片',
+  '03_合作机构': '合作协议、往来函件、结算单据、合作记录',
+  '04_财务管理': '收入凭证、支出凭证、财务报表、税务',
   '05_知识资源': '赛事规则、培训教材、经验总结',
-  '06_系统备份': '自动备份、手动备份、归档数据'
+  '06_系统备份': '自动备份、手动备份'
+}
+const categoryDescriptions = ref({ ...CATEGORY_DESCRIPTIONS_FALLBACK })
+
+const loadTaxonomy = async () => {
+  try {
+    const tax = await get('/api/archive-taxonomy')
+    if (tax && tax.descriptions) {
+      categoryDescriptions.value = { ...CATEGORY_DESCRIPTIONS_FALLBACK, ...tax.descriptions }
+    }
+  } catch (e) {
+    console.error('加载归档分类定义失败:', e)
+  }
 }
 
 const stripSeqPrefix = (name) => name.replace(/^\d+_/, '')
@@ -26,6 +40,7 @@ const stripSeqPrefix = (name) => name.replace(/^\d+_/, '')
 const categories = ref([])
 
 const loadCategories = async () => {
+  await loadTaxonomy()
   try {
     const items = await get('/api/list-archives?folder=')
     categories.value = (Array.isArray(items) ? items : [])
@@ -34,7 +49,7 @@ const loadCategories = async () => {
         id: i.name,
         name: stripSeqPrefix(i.name),
         path: i.name,
-        description: CATEGORY_DESCRIPTIONS[i.name] || '本地归档分类'
+        description: categoryDescriptions.value[i.name] || '本地归档分类'
       }))
   } catch (e) {
     console.error('加载归档分类失败:', e)
@@ -56,31 +71,97 @@ const showNewFolderModal = ref(false)
 const newFolderName = ref('')
 const uploadFile = ref(null)
 const uploadFileInput = ref(null)
+// 归档上传时的「文档标题」：人工填（默认预填上传文件的原名），
+// 与主体、日期一起组成 主体_标题_日期.ext —— 这样同目录内才区分得开。
+const uploadTitle = ref('')
 
-const filteredFiles = computed(() => {
-  if (!searchKeyword.value || !browsing.value) return files.value
-  const keyword = searchKeyword.value.toLowerCase()
-  return files.value.filter(f => f.name.toLowerCase().includes(keyword))
+const folders = computed(() => files.value.filter(f => f.type === 'folder'))
+const fileItems = computed(() => files.value.filter(f => f.type === 'file'))
+
+// ===== 递归搜索：像本地文件管理器那样，搜「当前分类下（含所有子目录）」或整个归档 =====
+const searchResults = ref([])
+const searchLoading = ref(false)
+const searchTruncated = ref(false)
+let searchTimer = null
+
+const searchMode = computed(() => !!searchKeyword.value.trim())
+
+const runSearch = async () => {
+  const q = searchKeyword.value.trim()
+  if (!q) {
+    searchResults.value = []
+    searchTruncated.value = false
+    return
+  }
+  // 已进入分类 → 只搜该分类（含子目录）；在总览页 → 搜整个归档
+  const folder = browsing.value ? currentPath.value : ''
+  searchLoading.value = true
+  try {
+    const res = await get(`/api/search-archives?q=${encodeURIComponent(q)}&folder=${encodeURIComponent(folder)}`)
+    searchResults.value = res.results || []
+    searchTruncated.value = !!res.truncated
+  } catch (e) {
+    console.error('搜索失败:', e)
+    searchResults.value = []
+  } finally {
+    searchLoading.value = false
+  }
+}
+
+watch(searchKeyword, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(runSearch, 250)   // 防抖：避免每敲一个字就打一次接口
 })
 
-// 总览页（未进入分类）也复用同一个搜索框：按分类名 / 描述过滤卡片，
-// 否则搜索框在总览页没有任何可见效果（此时文件列表区域是隐藏的）。
-const filteredCategories = computed(() => {
-  if (!searchKeyword.value || browsing.value) return categories.value
-  const keyword = searchKeyword.value.toLowerCase()
-  return categories.value.filter(c =>
-    c.name.toLowerCase().includes(keyword) ||
-    (c.description || '').toLowerCase().includes(keyword)
-  )
-})
+// 把路径拆成逐级历史，便于「返回上一级」一路往回走
+const buildHistory = (p) => {
+  const segs = String(p || '').split('/').filter(Boolean)
+  return segs.map((_, i) => segs.slice(0, i + 1).join('/'))
+}
 
-const folders = computed(() => {
-  return filteredFiles.value.filter(f => f.type === 'folder')
-})
+// 命中片段高亮（分段渲染，不用 v-html，避免文件名注入）
+const nameSegments = (name) => {
+  const text = String(name ?? '')
+  const kw = searchKeyword.value.trim()
+  if (!kw) return [{ text, hit: false }]
+  const lower = text.toLowerCase()
+  const k = kw.toLowerCase()
+  const out = []
+  let i = 0
+  while (i < text.length) {
+    const idx = lower.indexOf(k, i)
+    if (idx < 0) { out.push({ text: text.slice(i), hit: false }); break }
+    if (idx > i) out.push({ text: text.slice(i, idx), hit: false })
+    out.push({ text: text.slice(idx, idx + k.length), hit: true })
+    i = idx + k.length
+  }
+  return out.length ? out : [{ text, hit: false }]
+}
 
-const fileItems = computed(() => {
-  return filteredFiles.value.filter(f => f.type === 'file')
-})
+// 打开搜索结果：文件夹 → 进入该目录；文件 → 用本地软件打开
+const openSearchResult = async (item) => {
+  searchKeyword.value = ''
+  if (item.type === 'folder') {
+    browsing.value = true
+    pathHistory.value = buildHistory(item.path)
+    currentPath.value = item.path
+    currentPage.value = 1
+    await renderBrowserContent(item.path)
+  } else {
+    await openArchiveFile(item.path)
+  }
+}
+
+// 定位：跳到该结果所在的目录
+const locateResult = async (item) => {
+  const parent = item.parent || ''
+  searchKeyword.value = ''
+  browsing.value = true
+  pathHistory.value = buildHistory(parent)
+  currentPath.value = parent
+  currentPage.value = 1
+  await renderBrowserContent(parent)
+}
 
 const currentPage = ref(1)
 const pageSize = 15
@@ -327,6 +408,35 @@ const renameFolder = async (path, oldName) => {
   }
 }
 
+// 重命名文件：手动修正历史「机械名」（含存量文件）—— 给出可读的标题
+const renameFile = async (path, oldName) => {
+  const newName = await prompt({
+    title: '重命名文件',
+    message: '建议格式：主体_标题_日期.扩展名（主体与日期可保留原值，重点是标题）',
+    defaultValue: oldName,
+    placeholder: '新文件名'
+  })
+  if (!newName || newName === oldName) return
+
+  try {
+    const response = await fetchWithAuth('/api/rename-file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, newName })
+    })
+    const result = await response.json()
+    if (result.success) {
+      success('重命名成功')
+      await renderBrowserContent(currentPath.value)
+    } else {
+      error(result.message || '重命名失败')
+    }
+  } catch (e) {
+    console.error('重命名文件失败:', e)
+    error('重命名失败')
+  }
+}
+
 const getFileIconUrl = (fileName) => {
   const lastDot = fileName?.lastIndexOf('.')
   if (!lastDot || lastDot < 1) return '/api/file-icon?ext=default'
@@ -364,6 +474,9 @@ const triggerUploadFile = () => {
 
 const handleUploadFileSelect = (e) => {
   uploadFile.value = e.target.files[0]
+  // 预填「文档标题」= 上传文件原名（去扩展名），用户可改成真正能区分的标题
+  const f = uploadFile.value
+  uploadTitle.value = f ? f.name.replace(/\.[^.]+$/, '') : ''
 }
 
 const submitUpload = async () => {
@@ -372,6 +485,8 @@ const submitUpload = async () => {
   const formData = new FormData()
   formData.append('file', uploadFile.value)
   formData.append('targetPath', currentPath.value)
+  // 后端据此组装 主体_标题_日期.ext（主体/日期自动，标题来自这里）
+  formData.append('title', uploadTitle.value.trim())
 
   try {
     const response = await fetchWithAuth('/api/upload', {
@@ -383,6 +498,7 @@ const submitUpload = async () => {
       success('上传成功')
       showUploadModal.value = false
       uploadFile.value = null
+      uploadTitle.value = ''
       if (uploadFileInput.value) uploadFileInput.value.value = ''
       await renderBrowserContent(currentPath.value)
       fetchCategoryCounts()
@@ -473,8 +589,8 @@ watch(searchKeyword, () => {
           v-model="searchKeyword"
           type="text"
           class="form-input"
-          :placeholder="browsing ? '搜索文件...' : '搜索分类...'"
-          style="width: 200px;"
+          :placeholder="browsing ? '搜索该分类下全部文件夹与文件...' : '搜索归档内全部文件夹与文件...'"
+          style="width: 240px;"
         />
         <button class="btn-secondary" @click="exportAll">导出备份</button>
         <button
@@ -487,10 +603,57 @@ watch(searchKeyword, () => {
       </div>
     </div>
 
+    <!-- 搜索结果：递归匹配所有子目录里的文件夹与文件（像本地搜索） -->
+    <div v-if="searchMode" class="search-panel">
+      <div class="search-summary">
+        <span v-if="searchLoading">搜索中…</span>
+        <template v-else>
+          <span>找到 <b>{{ searchResults.length }}</b> 项</span>
+          <span class="search-scope">范围：{{ browsing ? '/' + currentPath : '全部归档' }}</span>
+          <span v-if="searchTruncated" class="search-warn">结果过多，仅显示前 300 项，请缩小关键词</span>
+        </template>
+      </div>
+
+      <div v-if="!searchLoading && searchResults.length === 0" class="empty-state">
+        <p>没有找到匹配的文件夹或文件</p>
+      </div>
+
+      <div v-else class="search-list">
+        <div
+          v-for="item in searchResults"
+          :key="item.path"
+          class="search-row"
+          @click="openSearchResult(item)"
+        >
+          <div class="search-icon">
+            <img
+              :src="item.type === 'folder' ? getFolderIconUrl() : getFileIconUrl(item.name)"
+              alt=""
+              class="native-icon"
+            />
+          </div>
+          <div class="search-main">
+            <div class="search-name">
+              <span
+                v-for="(s, i) in nameSegments(item.name)"
+                :key="i"
+                :class="{ 'kw-hit': s.hit }"
+              >{{ s.text }}</span>
+            </div>
+            <div class="search-path" :title="item.path">MediaArt_Archives/{{ item.parent ? item.parent + '/' : '' }}</div>
+          </div>
+          <div class="search-actions" @click.stop>
+            <button v-if="item.type === 'file'" class="btn-text" @click="previewArchiveFile(item)">预览</button>
+            <button class="btn-text" @click="locateResult(item)">定位</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 归档分类卡片 -->
-    <div v-if="!browsing" class="archive-categories">
+    <div v-else-if="!browsing" class="archive-categories">
       <div
-        v-for="cat in filteredCategories"
+        v-for="cat in categories"
         :key="cat.id"
         class="archive-category-card"
         :class="{ 'has-files': categoryHasFiles[cat.id] }"
@@ -504,13 +667,10 @@ watch(searchKeyword, () => {
           {{ categoryCounts[cat.id] || '加载中...' }}
         </div>
       </div>
-      <div v-if="filteredCategories.length === 0 && searchKeyword" class="empty-state">
-        <p>没有找到匹配的分类</p>
-      </div>
     </div>
 
     <!-- 文件浏览区域 -->
-    <div v-if="browsing" class="archive-browser-panel">
+    <div v-else class="archive-browser-panel">
       <div class="browser-header">
         <button class="btn-secondary" @click="goBack">← 返回上一级</button>
         <div class="browser-path">/{{ currentPath }}</div>
@@ -523,9 +683,9 @@ watch(searchKeyword, () => {
       <div class="browser-content">
         <div v-if="loading" class="empty-state">加载中...</div>
 
-        <div v-else-if="filteredFiles.length === 0" class="empty-state">
-          <p>{{ searchKeyword ? '没有找到匹配的文件' : '该目录为空' }}</p>
-          <p v-if="!searchKeyword" style="font-size: 12px; color: var(--text-tertiary); margin-top: 8px;">
+        <div v-else-if="files.length === 0" class="empty-state">
+          <p>该目录为空</p>
+          <p style="font-size: 12px; color: var(--text-tertiary); margin-top: 8px;">
             实际路径: MediaArt_Archives/{{ currentPath }}
           </p>
         </div>
@@ -552,6 +712,14 @@ watch(searchKeyword, () => {
                   class="folder-action-btn rename"
                   @click.stop="renameFolder(item.path, item.name)"
                   title="重命名"
+                >
+                  ✎
+                </button>
+                <button
+                  v-if="item.type === 'file'"
+                  class="folder-action-btn rename"
+                  @click.stop="renameFile(item.path, item.name)"
+                  title="重命名文件"
                 >
                   ✎
                 </button>
@@ -631,6 +799,18 @@ watch(searchKeyword, () => {
         <div class="current-path">{{ currentPath }}</div>
       </div>
       <div class="form-group">
+        <label class="form-label">文档标题</label>
+        <input
+          type="text"
+          v-model="uploadTitle"
+          class="form-input"
+          placeholder="如：春季展演策划方案（用于区分同目录内的文档）"
+        />
+        <p style="font-size: 12px; color: var(--text-tertiary); margin: 6px 0 0;">
+          最终文件名 = 主体_标题_日期.扩展名（主体与日期自动补）
+        </p>
+      </div>
+      <div class="form-group">
         <label class="form-label">选择文件</label>
         <input
           type="file"
@@ -707,6 +887,31 @@ watch(searchKeyword, () => {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* 搜索结果：递归匹配所有子目录（像本地文件管理器搜索） */
+.search-panel { background: var(--surface); border: 1px solid var(--border-light); border-radius: 10px; overflow: hidden; }
+.search-summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: var(--bg-secondary); font-size: 13px; color: var(--text-secondary); }
+.search-summary b { color: var(--accent); }
+.search-scope { color: var(--text-tertiary); }
+.search-warn { color: var(--danger); }
+.search-list { display: flex; flex-direction: column; }
+.search-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; cursor: pointer; border-top: 1px solid var(--border-light); transition: background var(--transition-fast); }
+.search-row:hover { background: var(--bg-hover); }
+.search-icon .native-icon { width: 28px; height: 28px; object-fit: contain; display: block; }
+.search-main { flex: 1; min-width: 0; }
+.search-name { font-size: 14px; color: var(--text-primary); word-break: break-all; }
+.search-name .kw-hit { background: var(--accent-light); color: var(--accent); font-weight: 600; border-radius: 3px; }
+.search-path { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; word-break: break-all; }
+.search-actions { display: flex; gap: 4px; flex-shrink: 0; }
+/* 行内文字按钮：模板里用了 .btn-text，但本组件此前没定义它 ——
+   浏览器按默认按钮渲染（灰底方框），和系统其它页面的文字按钮完全不是一个观感。
+   这里对齐资源中心 .btn-link 的写法：无边框、主色文字、悬停浅底。 */
+.search-actions .btn-text {
+  padding: 4px 10px; background: none; border: none; border-radius: var(--radius-sm);
+  color: var(--accent); font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.search-actions .btn-text:hover { background: var(--accent-light); }
 
 .archive-categories {
   display: grid;

@@ -189,9 +189,7 @@ const handleSave = async () => {
 </script>
 
 <style scoped>
-.page {
-  padding: 24px;
-}
+/* 注：原此处有 `.page { padding: 24px }`，本组件无任何元素使用 `page` 类，属死 CSS，已移除。 */
 
 .page-header {
   display: flex;

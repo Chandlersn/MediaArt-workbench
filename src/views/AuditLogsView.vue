@@ -1,10 +1,19 @@
 <script setup>
 import { ref, computed, onMounted, onActivated } from 'vue'
-import { useAuditLogStore } from '../stores'
+import { useAuditLogStore, useUserStore } from '../stores'
+import { useToast } from '../composables/useToast'
 import PageHeader from '../components/PageHeader.vue'
 import CustomSelect from '../components/CustomSelect.vue'
+import Modal from '../components/Modal.vue'
 
 const auditLogStore = useAuditLogStore()
+const userStore = useUserStore()
+const { success, error } = useToast()
+
+// 一键清除日志（需系统设置删除权限；后端同样校验）
+const canClearLogs = computed(() => userStore.can('settings', 'delete'))
+const showClearModal = ref(false)
+const clearing = ref(false)
 
 const filterType = ref('all')
 const searchKeyword = ref('')
@@ -101,12 +110,28 @@ const handleNextPage = () => {
   }
 }
 
+const confirmClearLogs = async () => {
+  clearing.value = true
+  try {
+    const result = await auditLogStore.clearLogs()
+    success((result && result.message) || '日志已清除')
+    showClearModal.value = false
+    currentPage.value = 1
+  } catch (e) {
+    error(e.message || '清除失败')
+  } finally {
+    clearing.value = false
+  }
+}
+
 onMounted(() => {
   auditLogStore.loadLogs()
+  userStore.loadPermissions()
 })
 
 onActivated(() => {
   auditLogStore.loadLogs()
+  userStore.loadPermissions()
 })
 </script>
 
@@ -115,7 +140,16 @@ onActivated(() => {
     <PageHeader
       title="审计日志"
       description="查看系统操作记录和用户活动"
-    />
+    >
+      <template #actions>
+        <button
+          v-if="canClearLogs"
+          class="btn-clear"
+          :disabled="logs.length === 0"
+          @click="showClearModal = true"
+        >清除日志</button>
+      </template>
+    </PageHeader>
 
     <div class="filter-bar">
       <div class="filter-group">
@@ -175,9 +209,9 @@ onActivated(() => {
                 {{ getActionLabel(log.actionType) }}
               </span>
             </td>
-            <td>{{ log.userName }}</td>
-            <td class="desc-cell">{{ log.description }}</td>
-            <td>{{ log.target }}</td>
+            <td>{{ log.userName || '-' }}</td>
+            <td class="desc-cell">{{ log.description || '-' }}</td>
+            <td>{{ log.target || '-' }}</td>
             <td class="ip-cell">{{ log.ip || '-' }}</td>
           </tr>
         </tbody>
@@ -203,6 +237,21 @@ onActivated(() => {
         下一页
       </button>
     </div>
+
+    <Modal
+      :show="showClearModal"
+      title="确认清除日志"
+      size="small"
+      @close="showClearModal = false"
+    >
+      <p>确定要清除全部审计日志吗？此操作不可撤销。</p>
+      <template #footer>
+        <button class="btn-modal-secondary" @click="showClearModal = false">取消</button>
+        <button class="btn-modal-danger" :disabled="clearing" @click="confirmClearLogs">
+          {{ clearing ? '清除中…' : '确认清除' }}
+        </button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -425,4 +474,38 @@ onActivated(() => {
 
 [data-theme="dark"] .action-update { color: var(--accent); }
 [data-theme="dark"] .action-login, [data-theme="dark"] .action-logout { color: var(--text-secondary); }
+
+/* 一键清除日志 */
+.btn-clear {
+  padding: 8px 16px;
+  border: 1px solid var(--danger-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--danger-color);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-clear:hover:not(:disabled) { background: var(--danger-color); color: #fff; }
+.btn-clear:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-modal-secondary {
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-modal-danger {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--danger-color);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-modal-danger:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

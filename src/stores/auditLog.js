@@ -39,13 +39,23 @@ export const useAuditLogStore = defineStore('auditLog', () => {
     }
   }
 
+  // 一键清除全部审计日志（需系统设置删除权限，后端校验）
+  const clearLogs = async () => {
+    const result = await post('/api/audit-logs/clear')
+    if (result && result.success) {
+      logs.value = []
+      return result
+    }
+    throw new Error((result && result.message) || '清除失败')
+  }
+
   const getLogsByType = (actionType) => {
     return logs.value.filter(l => l.actionType === actionType)
   }
 
   const getLogsByDateRange = (startDate, endDate) => {
     return logs.value.filter(l => {
-      const date = new Date(l.timestamp)
+      const date = new Date(l.createdAt)
       return date >= new Date(startDate) && date <= new Date(endDate)
     })
   }
@@ -56,6 +66,7 @@ export const useAuditLogStore = defineStore('auditLog', () => {
     error,
     loadLogs,
     addLog,
+    clearLogs,
     getLogsByType,
     getLogsByDateRange
   }

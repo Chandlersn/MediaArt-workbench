@@ -67,7 +67,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     if (data && typeof data === 'object') {
       KNOWLEDGE_TYPE_ORDER.forEach(t => { if (Array.isArray(data[t])) next[t] = data[t] })
       Object.entries(LEGACY_TYPE_MAP).forEach(([old, neu]) => {
-        ;(data[old] || []).forEach(it => {
+        (data[old] || []).forEach(it => {
           if (it && !next[neu].some(x => x.id === it.id)) next[neu].push({ ...it, type: neu })
         })
       })
@@ -93,7 +93,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const getAllFlat = () => {
     const out = []
     KNOWLEDGE_TYPE_ORDER.forEach(type => {
-      ;(knowledge.value[type] || []).forEach(item => out.push({ ...item, kind: type }))
+      (knowledge.value[type] || []).forEach(item => out.push({ ...item, kind: type }))
     })
     return out
   }
@@ -162,7 +162,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       const tags = (it.tags || []).map(t => t.toLowerCase())
       seeds.forEach(s => {
         if (tags.includes(s)) score += 3
-        const hay = ((it.title || '') + ' ' + (it.description || '')).toLowerCase()
+        const hay = (`${it.title || ''} ${it.description || ''}`).toLowerCase()
         if (hay.includes(s)) score += 1
       })
       if (score > 0) scored.push({ it, score })

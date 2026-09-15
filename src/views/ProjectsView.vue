@@ -303,6 +303,11 @@ const batchDelete = async () => {
 }
 
 .project-card {
+  /* ⚠️ 必须显式声明 display：全局 style.css 的 `.project-card` 是
+     `display:flex; justify-content:space-between; align-items:center`，
+     本组件不覆盖的话，header/body/footer 三个子块会被排成一行并两端撑开
+     （原意是纵向堆叠——三者都带 margin-bottom）。 */
+  display: block;
   background: var(--bg-primary, #fff);
   border-radius: 12px;
   padding: 20px;

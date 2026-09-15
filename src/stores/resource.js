@@ -2,16 +2,18 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as dataService from '../services/dataService.js'
 
-// 资源中心默认分类（与旧版扩展名分类对齐，并补充业务资料分类）
+// 资源中心默认分类（与旧版扩展名分类对齐，仅通用素材分类）。
+// 注意：项目资料 / 选手资料 / 机构资料 不在此处 —— 它们由归档管理集中维护
+// （MediaArt_Archives/01_项目资料、02_选手档案、03_合作机构），不应出现在资源中心。
 const DEFAULT_CATEGORIES = [
   { id: 'image', name: '图片素材', folder: 'images', icon: '🖼' },
   { id: 'video', name: '视频素材', folder: 'videos', icon: '🎬' },
   { id: 'document', name: '文档资料', folder: 'documents', icon: '📄' },
-  { id: 'audio', name: '音频素材', folder: 'audio', icon: '🎵' },
-  { id: 'project', name: '项目资料', folder: 'projects', icon: '📋' },
-  { id: 'player', name: '选手资料', folder: 'players', icon: '👥' },
-  { id: 'organization', name: '机构资料', folder: 'organizations', icon: '🏢' }
+  { id: 'audio', name: '音频素材', folder: 'audios', icon: '🎵' }
 ]
+
+// 归档管理专属分类（资源中心不展示，避免与归档重复、且对应文件夹恒为空）
+const ARCHIVE_RESERVED_CATEGORY_IDS = ['project', 'player', 'organization']
 
 export const useResourceStore = defineStore('resource', () => {
   const categories = ref([])
@@ -27,7 +29,24 @@ export const useResourceStore = defineStore('resource', () => {
         cats = DEFAULT_CATEGORIES.map(c => ({ ...c }))
         await persist(cats)
       }
-      categories.value = cats
+      // 1) 过滤归档管理专属分类（项目/选手/机构），它们不应出现在资源中心
+      // 2) 修正历史遗留：音频分类 folder 曾写成单数 audio，磁盘目录为 audios
+      let changed = false
+      const cleaned = cats
+        .filter(c => {
+          const drop = ARCHIVE_RESERVED_CATEGORY_IDS.includes(c.id)
+          if (drop) changed = true
+          return !drop
+        })
+        .map(c => {
+          if (c.id === 'audio' && c.folder === 'audio') {
+            changed = true
+            return { ...c, folder: 'audios' }
+          }
+          return c
+        })
+      if (changed) await persist(cleaned)
+      categories.value = cleaned
     } catch (e) {
       console.error('加载资源分类失败:', e)
       categories.value = DEFAULT_CATEGORIES.map(c => ({ ...c }))

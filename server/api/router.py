@@ -67,17 +67,9 @@ class APIRouter:
         except ImportError as e:
             logger.warning(f"Players module not available: {e}")
 
-        try:
-            from server.finances.routes import FinancesRouter
-            self.routes['/api/finances'] = FinancesRouter()
-        except ImportError as e:
-            logger.warning(f"Finances module not available: {e}")
-
-        try:
-            from server.knowledge.routes import KnowledgeRouter
-            self.routes['/api/knowledge'] = KnowledgeRouter()
-        except ImportError as e:
-            logger.warning(f"Knowledge module not available: {e}")
+        # ⚠️ 已退役：/api/finances、/api/knowledge 两套 REST 路由前端从未调用
+        #    （财务/知识库数据统一走 POST /api/data/save 全量快照）。
+        #    对应 server/finances/、server/knowledge/ 已删除（备份在 backup_route_consolidation_*）。
 
         try:
             from server.search.routes import SearchRouter
@@ -98,7 +90,10 @@ class APIRouter:
                       '/api/preview-text', '/api/config/archive-path',
                       '/api/config/resources-path', '/api/audit-logs',
                       '/api/cleanup/scan', '/api/cleanup/execute',
-                      '/api/save-stage-materials'):
+                      '/api/save-stage-materials',
+                      '/api/trash', '/api/trash/restore', '/api/trash/purge',
+                      '/api/trash/purge-all',
+                      '/api/material-types', '/api/archive/reconcile'):
                 self.routes[p] = self._system_router
         except ImportError as e:
             logger.warning(f"System module not available: {e}")
@@ -131,7 +126,8 @@ class APIRouter:
         archive_paths = [
             '/api/count-files', '/api/list-archives', '/api/open-archive',
             '/api/delete-folder', '/api/create-folder',
-            '/api/rename-folder', '/api/file-icon'
+            '/api/rename-folder', '/api/rename-file', '/api/file-icon',
+            '/api/archive-taxonomy', '/api/search-archives'
         ]
         return path in archive_paths
 

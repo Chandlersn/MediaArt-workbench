@@ -159,6 +159,12 @@
       </div>
     </div>
 
+    <!-- 来源上下文：从机构 / 项目详情页的「关联证书」跳转带入 -->
+    <div v-if="ctxActive" class="ctx-bar">
+      <span class="ctx-label">已限定来源：{{ ctxLabel }}</span>
+      <button class="btn-text" @click="clearContext">清除筛选</button>
+    </div>
+
     <!-- 筛选栏 -->
     <div v-if="visibleCertificates.length > 0" class="filter-bar">
       <CustomSelect v-model="filterAward" style="width:150px">
@@ -175,6 +181,9 @@
         <option value="未打包">未打包</option>
         <option value="待核对">待核对</option>
       </CustomSelect>
+      <button class="btn-secondary btn-sm" :class="{ active: ctxMissing }" @click="ctxMissing = !ctxMissing">
+        仅缺作品名
+      </button>
       <input v-model="keyword" class="form-input" placeholder="搜索姓名 / 机构 / 作品 / 证书号" style="flex:1; min-width:180px;" />
     </div>
 
@@ -330,6 +339,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onActivated, watch, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '../composables/useToast'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 import { useCertificateStore } from '../stores/certificate'
@@ -384,6 +394,37 @@ const filterRound = ref('')
 const filterPacked = ref('')
 const keyword = ref('')
 
+// ===== 来源上下文筛选：由机构 / 项目详情页的「关联证书」点击跳转带入 =====
+const route = useRoute()
+const router = useRouter()
+const ctxOrgId = ref('')
+const ctxOrgName = ref('')
+const ctxProjectId = ref('')
+const ctxMissing = ref(false)
+
+const applyRouteQuery = () => {
+  const q = route.query || {}
+  ctxOrgId.value = String(q.orgId || '')
+  ctxOrgName.value = String(q.orgName || '')
+  ctxProjectId.value = String(q.projectId || '')
+  ctxMissing.value = q.missingWorkName === '1'
+  filterAward.value = String(q.award || '')
+  filterRound.value = String(q.round || '')
+  filterPacked.value = String(q.packed || '')
+  keyword.value = String(q.keyword || '')
+  currentPage.value = 1
+}
+
+const clearContext = () => {
+  ctxOrgId.value = ''
+  ctxOrgName.value = ''
+  ctxProjectId.value = ''
+  ctxMissing.value = false
+  currentPage.value = 1
+  // 同时清掉地址栏参数，避免刷新又回到筛选态
+  if (Object.keys(route.query || {}).length) router.replace({ path: '/certificates' })
+}
+
 const currentPage = ref(1)
 const pageSize = ref(50)
 
@@ -400,23 +441,50 @@ const roundOptionsAll = ref(ROUND_ORDER.slice())
 
 const awardOptions = computed(() => {
   const set = new Set(visibleCertificates.value.map(c => c.award).filter(Boolean))
-  return AWARD_BASE.filter(a => set.has(a)).concat([...set].filter(a => !AWARD_BASE.includes(a)))
+  const list = AWARD_BASE.filter(a => set.has(a)).concat([...set].filter(a => !AWARD_BASE.includes(a)))
+  // 奖项为空的证书在分组里叫「未分类」，下拉也要能选到
+  return visibleCertificates.value.some(c => !c.award) ? list.concat(['未分类']) : list
 })
 const roundOptions = computed(() => {
   const set = new Set(visibleCertificates.value.map(c => c.certRound).filter(Boolean))
   return [...new Set([...ROUND_ORDER.filter(r => set.has(r)), ...[...set].filter(r => !ROUND_ORDER.includes(r))])]
 })
 
+// 上下文是否生效 + 提示条文案
+const ctxActive = computed(() => !!(ctxOrgId.value || ctxOrgName.value || ctxProjectId.value))
+const ctxLabel = computed(() => {
+  if (ctxProjectId.value) {
+    const p = projectOptions.value.find(x => x.id === ctxProjectId.value)
+    return `项目「${p?.name || ctxProjectId.value}」`
+  }
+  if (ctxOrgName.value || ctxOrgId.value) return `机构「${ctxOrgName.value || ctxOrgId.value}」`
+  return ''
+})
+
 const stats = computed(() => certStore.getCertStats({
   award: filterAward.value,
   certRound: filterRound.value,
-  packed: filterPacked.value
+  packed: filterPacked.value,
+  orgId: ctxOrgId.value,
+  orgName: ctxOrgName.value,
+  projectId: ctxProjectId.value,
+  missingWorkName: ctxMissing.value
 }))
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return visibleCertificates.value.filter(c => {
-    if (filterAward.value && c.award !== filterAward.value) return false
+    // 来源上下文：机构按 id / 名称任一命中（与详情页统计口径一致）；项目按 projectId
+    if (ctxOrgId.value || ctxOrgName.value) {
+      const hitOrg = (ctxOrgId.value && c.orgId === ctxOrgId.value) ||
+        (ctxOrgName.value && c.orgName === ctxOrgName.value)
+      if (!hitOrg) return false
+    }
+    if (ctxProjectId.value && c.projectId !== ctxProjectId.value) return false
+    if (ctxMissing.value && !c.missingWorkName) return false
+    if (filterAward.value) {
+      if ((c.award || '未分类') !== filterAward.value) return false
+    }
     if (filterRound.value && c.certRound !== filterRound.value) return false
     if (filterPacked.value) {
       if ((c.packed || '待核对') !== filterPacked.value) return false
@@ -673,6 +741,7 @@ onMounted(async () => {
     playerStore.loadPlayers?.()
   ].filter(Boolean))
   syncRulesFromStore()
+  applyRouteQuery()
   await nextTick()
   renderCharts()
 })
@@ -685,9 +754,13 @@ onActivated(async () => {
     playerStore.loadPlayers?.()
   ].filter(Boolean))
   syncRulesFromStore()
+  applyRouteQuery()
   await nextTick()
   renderCharts()
 })
+
+// 地址栏 query 变化（例如从另一个机构再点进来）时重新应用上下文
+watch(() => route.query, () => applyRouteQuery())
 </script>
 
 <style scoped>
@@ -718,6 +791,8 @@ onActivated(async () => {
 .stat-card .lbl { font-size: 13px; color: var(--text-secondary); }
 
 .filter-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+.ctx-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; padding: 8px 14px; background: #f7ece9; border-left: 3px solid var(--cinnabar, #b0392b); border-radius: 6px; }
+.ctx-label { font-size: 13px; font-weight: 600; color: var(--cinnabar, #b0392b); }
 
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
 .chart-card { background: var(--bg-secondary); border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }

@@ -150,10 +150,12 @@ export const useCertificateStore = defineStore('certificate', () => {
         (filter.orgName ? c.orgName === filter.orgName : false)
       )
     }
-    if (filter.award) list = list.filter(c => c.award === filter.award)
+    // 奖项：空值按「未分类」处理，与下方 byAward 的分组口径保持一致
+    if (filter.award) list = list.filter(c => (c.award || '未分类') === filter.award)
     if (filter.certRound) list = list.filter(c => c.certRound === filter.certRound)
     if (filter.language) list = list.filter(c => c.language === filter.language)
     if (filter.packed) list = list.filter(c => c.packed === filter.packed)
+    if (filter.missingWorkName) list = list.filter(c => c.missingWorkName)
 
     const byAward = {}
     const byRound = {}

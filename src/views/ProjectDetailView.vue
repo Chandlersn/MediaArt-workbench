@@ -109,18 +109,30 @@
       <div class="detail-section">
         <h3>关联证书</h3>
         <div v-if="projectCertStats.total > 0" class="cert-metrics">
-          <div class="cert-metric">
+          <button type="button" class="cert-metric" title="在证书管理中查看本项目全部证书" @click="goCerts()">
             <span class="num">{{ projectCertStats.total }}</span>
             <span class="lbl">证书总数</span>
-          </div>
-          <div class="cert-metric" v-for="a in projectCertStats.byAward" :key="a.award">
+          </button>
+          <button
+            type="button"
+            class="cert-metric"
+            v-for="a in projectCertStats.byAward"
+            :key="a.award"
+            :title="`在证书管理中查看「${a.award}」`"
+            @click="goCerts({ award: a.award })"
+          >
             <span class="num">{{ a.count }}</span>
             <span class="lbl">{{ a.award }}</span>
-          </div>
-          <div class="cert-metric">
+          </button>
+          <button
+            type="button"
+            class="cert-metric"
+            title="在证书管理中查看缺作品名的证书"
+            @click="goCerts({ missingWorkName: 1 })"
+          >
             <span class="num">{{ projectCertStats.missingWorkName }}</span>
             <span class="lbl">缺作品名</span>
-          </div>
+          </button>
         </div>
         <div v-else class="empty-state">该项目暂无关联证书，可在「证书管理」导入时选择归属本项目</div>
       </div>
@@ -222,9 +234,18 @@ const projectOrgs = computed(() => {
 
 const projectCertStats = computed(() => certStore.getCertStats({ projectId: project.value?.id }))
 
+// 「关联证书」各指标可点击 → 跳证书管理，并按本项目（+奖项/缺作品名）预置筛选
+const goCerts = (extra = {}) => {
+  const query = { projectId: project.value?.id || '' }
+  if (extra.award) query.award = extra.award
+  if (extra.missingWorkName) query.missingWorkName = '1'
+  router.push({ path: '/certificates', query })
+}
+
 // 项目资料相关
 const materialType = ref('')
 const selectedFile = ref(null)
+const uploadTitle = ref('')
 const materialFileInput = ref(null)
 const projectMaterialTypes = ref([])
 const showAddOrgModal = ref(false)
@@ -375,6 +396,9 @@ const uploadMaterial = async () => {
   formData.append('file', selectedFile.value)
   formData.append('projectName', project.value.name)
   formData.append('materialType', materialType.value)
+  if (uploadTitle.value.trim()) {
+    formData.append('title', uploadTitle.value.trim())
+  }
 
   try {
     const response = await fetchWithAuth('/api/upload', {
@@ -466,6 +490,20 @@ const previewMaterial = (material) => {
 </script>
 
 <style scoped>
+.title-input {
+  flex: 1 1 170px;
+  min-width: 120px;
+  padding: 6px 10px;
+  border: 1px solid var(--line, #d8cfc0);
+  border-radius: 6px;
+  background: var(--paper, #fbf8f1);
+  color: var(--ink, #2b2b2b);
+  font-size: 13px;
+}
+.title-input:focus {
+  outline: none;
+  border-color: var(--cinnabar, #b03a2e);
+}
 .project-detail-page {
   padding: 24px;
 }
@@ -802,7 +840,8 @@ const previewMaterial = (material) => {
 }
 
 .cert-metrics { display: flex; flex-wrap: wrap; gap: 16px; }
-.cert-metric { display: flex; flex-direction: column; align-items: center; min-width: 88px; padding: 12px 16px; background: var(--bg-secondary); border-radius: 8px; }
+.cert-metric { display: flex; flex-direction: column; align-items: center; min-width: 88px; padding: 12px 16px; background: var(--bg-secondary); border: 1px solid transparent; border-radius: 8px; font: inherit; color: inherit; cursor: pointer; transition: all 0.15s; }
+.cert-metric:hover { border-color: var(--accent); background: var(--bg-hover); }
 .cert-metric .num { font-size: 22px; font-weight: 700; color: var(--cinnabar, #b0392b); }
 .cert-metric .lbl { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
 

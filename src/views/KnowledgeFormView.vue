@@ -1,11 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { storeToRefs } from 'pinia'
-import { useKnowledgeStore, KNOWLEDGE_TYPES, KNOWLEDGE_TYPE_ORDER } from '../stores'
-import { useProjectStore } from '../stores'
-import { usePlayerStore } from '../stores'
-import { useOrganizationStore } from '../stores'
+import { useKnowledgeStore, KNOWLEDGE_TYPES, KNOWLEDGE_TYPE_ORDER, useProjectStore, usePlayerStore, useOrganizationStore } from '../stores'
 import PageHeader from '../components/PageHeader.vue'
 import { useToast } from '../composables/useToast'
 import CustomSelect from '../components/CustomSelect.vue'

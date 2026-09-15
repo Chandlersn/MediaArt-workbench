@@ -2,11 +2,10 @@
 Projects API routes module.
 """
 
-import json
 import logging
 from typing import Dict, Any
 from server.database.store import data_store
-from server.utils.auth_middleware import require_auth, require_permission
+from server.utils.auth_middleware import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -33,18 +32,14 @@ class ProjectsRouter:
             elif method == 'GET' and path.startswith('/api/projects/'):
                 project_id = path.split('/')[-1]
                 return self.get_project(project_id, request_context)
-            elif method == 'POST' and path == '/api/projects':
-                return self.create_project(request_context)
-            elif method == 'PUT' and path.startswith('/api/projects/'):
-                project_id = path.split('/')[-1]
-                return self.update_project(project_id, request_context)
-            elif method == 'DELETE' and path.startswith('/api/projects/'):
-                project_id = path.split('/')[-1]
-                return self.delete_project(project_id, request_context)
+            # ⚠️ 写入已统一走 POST /api/data/save（全量快照，见前端 dataService.save）。
+            #    此前的 POST/PUT/DELETE /api/projects 前端从未调用，属第二套并行写
+            #    路径，已退役——避免"同一份数据两处可写、改一处不影响另一处"。
             else:
                 return {
                     'status': 405,
-                    'body': {'success': False, 'error': 'Method Not Allowed'},
+                    'body': {'success': False, 'error': 'Method Not Allowed',
+                             'message': '写入请使用 POST /api/data/save'},
                     'headers': {'Content-Type': 'application/json'}
                 }
         except Exception as e:
@@ -111,44 +106,5 @@ class ProjectsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('projects', 'edit')
-    def create_project(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new project."""
-        body = request_context.get('body', b'')
-        data = json.loads(body) if body else {}
-
-        project_id = data_store.projects.create(data)
-        return {
-            'status': 201,
-            'body': {'success': True, 'id': project_id, 'message': 'Project created'},
-            'headers': {'Content-Type': 'application/json'}
-        }
-
-    @require_permission('projects', 'edit')
-    def update_project(self, project_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Update a project."""
-        body = request_context.get('body', b'')
-        data = json.loads(body) if body else {}
-
-        success = data_store.projects.update(project_id, data)
-        return {
-            'status': 200,
-            'body': {
-                'success': success,
-                'message': 'Project updated' if success else 'Project not found'
-            },
-            'headers': {'Content-Type': 'application/json'}
-        }
-
-    @require_permission('projects', 'delete')
-    def delete_project(self, project_id, request_context=None):
-        """Delete a project."""
-        success = data_store.projects.delete(project_id)
-        return {
-            'status': 200,
-            'body': {
-                'success': success,
-                'message': 'Project deleted' if success else 'Project not found'
-            },
-            'headers': {'Content-Type': 'application/json'}
-        }
+    # 写入方法（create/update/delete_project）已随第二套写路径退役，
+    # 统一走 POST /api/data/save → data_store.save_all_data。

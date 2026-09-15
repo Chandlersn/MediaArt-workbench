@@ -15,20 +15,24 @@ from server.utils.auth_middleware import require_auth, require_permission
 
 logger = logging.getLogger(__name__)
 
-# Archive base directory
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ARCHIVE_DIR = os.path.join(BASE_DIR, 'MediaArt_Archives')
+# 归档根目录：与 resources / materials 走同一套解析 —— 优先 config.json 的 archivePath，
+# 否则退回 BASE_DIR/MediaArt_Archives。
+# ⚠️ 此前这里是 os.path.join(BASE_DIR, 'MediaArt_Archives')，绕过了配置：用户在设置里
+# 改了归档目录后，归档管理页仍然读写默认目录（而资源中心走的是配置），两边会不一致。
+from server.resources.routes import get_archives_dir
+from server.utils.trash import send_to_trash
+ARCHIVE_DIR = get_archives_dir()
 
 
 def ensure_archive_dir():
-    """Ensure archive directory exists with default subfolders."""
+    """Ensure archive directory exists with default top-level folders.
+
+    一级分类来自 server/archive/taxonomy.py 的单一权威定义，不在此重复硬编码。
+    """
+    from server.archive.taxonomy import ARCHIVE_TOP_DIRS
     if not os.path.exists(ARCHIVE_DIR):
         os.makedirs(ARCHIVE_DIR, exist_ok=True)
-    default_folders = [
-        '01_项目资料', '02_选手档案', '03_合作机构',
-        '04_财务管理', '05_知识资源', '06_系统备份'
-    ]
-    for folder in default_folders:
+    for folder in ARCHIVE_TOP_DIRS:
         folder_path = os.path.join(ARCHIVE_DIR, folder)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path, exist_ok=True)
@@ -64,6 +68,12 @@ class ArchiveRouter:
                 return self.upload_file(request_context)
             elif method == 'PUT' and path == '/api/rename-folder':
                 return self.rename_folder(request_context)
+            elif method == 'PUT' and path == '/api/rename-file':
+                return self.rename_file(request_context)
+            elif method == 'GET' and path == '/api/archive-taxonomy':
+                return self.archive_taxonomy(request_context)
+            elif method == 'GET' and path == '/api/search-archives':
+                return self.search_archives(request_context)
             else:
                 return {
                     'status': 405,
@@ -75,6 +85,145 @@ class ArchiveRouter:
             return {
                 'status': 500,
                 'body': {'success': False, 'error': 'Internal Server Error', 'message': str(e)},
+                'headers': {'Content-Type': 'application/json'}
+            }
+
+    def archive_taxonomy(self, request_context=None) -> Dict[str, Any]:
+        """归档分类的单一权威定义（供前端取分类描述与二级目录）。
+
+        定义来源：server/archive/taxonomy.py。只读、无需鉴权。
+        """
+        from server.archive.taxonomy import as_dict
+        return {
+            'status': 200,
+            'body': as_dict(),
+            'headers': {'Content-Type': 'application/json'}
+        }
+
+    @require_permission('resources', 'view')
+    def search_archives(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """递归搜索归档下的文件夹与文件（名称包含匹配，大小写不敏感）。
+
+        参数：q=关键词；folder=可选搜索起点（相对归档根目录；留空=整个归档）。
+        结果含相对归档根目录的 path 与所在目录 parent，供前端展示与跳转。
+        """
+        qp = request_context.get('query_params', {}) or {}
+        q = (qp.get('q', [''])[0] or '').strip()
+        folder = unquote(qp.get('folder', [''])[0] or '').strip()
+        empty = {
+            'status': 200,
+            'body': {'results': [], 'count': 0, 'truncated': False},
+            'headers': {'Content-Type': 'application/json'}
+        }
+        if not q:
+            return empty
+        try:
+            base = self._get_full_path(folder)
+            if not os.path.isdir(base):
+                return empty
+            needle = q.lower()
+            limit = 300
+            archive_root = os.path.normpath(ARCHIVE_DIR)
+            results = []
+            truncated = False
+            for root, dirs, filenames in os.walk(base):
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                for name in dirs:
+                    if needle in name.lower():
+                        rel = os.path.relpath(os.path.join(root, name), archive_root).replace('\\', '/')
+                        results.append({
+                            'name': name, 'path': rel, 'type': 'folder',
+                            'parent': os.path.dirname(rel).replace('\\', '/')
+                        })
+                        if len(results) >= limit:
+                            truncated = True
+                            break
+                if truncated:
+                    break
+                for name in filenames:
+                    if name.startswith('.') or needle not in name.lower():
+                        continue
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, archive_root).replace('\\', '/')
+                    try:
+                        st = os.stat(full)
+                        size, modified = st.st_size, st.st_mtime
+                    except OSError:
+                        size, modified = 0, 0
+                    results.append({
+                        'name': name, 'path': rel, 'type': 'file',
+                        'parent': os.path.dirname(rel).replace('\\', '/'),
+                        'size': size, 'modified': modified
+                    })
+                    if len(results) >= limit:
+                        truncated = True
+                        break
+                if truncated:
+                    break
+            # 文件夹在前，其余按路径排序，便于逐行扫读
+            results.sort(key=lambda r: (0 if r['type'] == 'folder' else 1, r['path']))
+            return {
+                'status': 200,
+                'body': {'results': results, 'count': len(results), 'truncated': truncated},
+                'headers': {'Content-Type': 'application/json'}
+            }
+        except Exception as e:
+            logger.error(f"搜索归档失败: {e}")
+            return {
+                'status': 500,
+                'body': {'success': False, 'message': str(e)},
+                'headers': {'Content-Type': 'application/json'}
+            }
+
+    @require_permission('resources', 'edit')
+    def rename_file(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """重命名归档内的文件（同目录内改名）。
+
+        用途：修正历史「机械名」（如 主体__类型_随机数），让人给出可读的标题。
+        推荐格式：`主体_标题_日期.扩展名`（前端预填当前名，可改）。
+        """
+        from server.resources.routes import _sanitize_filename
+        body = request_context.get('body', b'')
+        data = json.loads(body) if body else {}
+        path = data.get('path', '')
+        safe_name = _sanitize_filename(data.get('newName', ''))
+        if not safe_name:
+            return {
+                'status': 400,
+                'body': {'success': False, 'message': '非法的文件名'},
+                'headers': {'Content-Type': 'application/json'}
+            }
+        try:
+            old_full = self._get_full_path(path)
+            if not os.path.exists(old_full) or not os.path.isfile(old_full):
+                return {
+                    'status': 404,
+                    'body': {'success': False, 'message': 'File not found'},
+                    'headers': {'Content-Type': 'application/json'}
+                }
+            new_full = os.path.join(os.path.dirname(old_full), safe_name)
+            if not new_full.startswith(os.path.normpath(ARCHIVE_DIR)):
+                return {
+                    'status': 403,
+                    'body': {'success': False, 'message': '非法的路径'},
+                    'headers': {'Content-Type': 'application/json'}
+                }
+            if os.path.exists(new_full):
+                return {
+                    'status': 409,
+                    'body': {'success': False, 'message': '同名文件已存在'},
+                    'headers': {'Content-Type': 'application/json'}
+                }
+            os.rename(old_full, new_full)
+            return {
+                'status': 200,
+                'body': {'success': True, 'message': 'File renamed', 'newName': safe_name},
+                'headers': {'Content-Type': 'application/json'}
+            }
+        except Exception as e:
+            return {
+                'status': 500,
+                'body': {'success': False, 'message': str(e)},
                 'headers': {'Content-Type': 'application/json'}
             }
 
@@ -332,11 +481,12 @@ class ArchiveRouter:
                     'headers': {'Content-Type': 'application/json'}
                 }
 
-            shutil.rmtree(full_path)
-
+            rid = send_to_trash(full_path)
             return {
                 'status': 200,
-                'body': {'success': True, 'message': 'Folder deleted'},
+                'body': {'success': True,
+                         'message': '文件夹已移入回收站' if rid else '文件夹已删除',
+                         'trash_id': rid},
                 'headers': {'Content-Type': 'application/json'}
             }
         except Exception as e:

@@ -32,11 +32,16 @@ export async function load() {
 }
 
 /**
- * 读取顶层字段的数据切片
- * @param {string} key - 如 'finances' | 'projects' | 'organizations' | 'players'
+ * 读取数据：传 key 取顶层字段切片，**不传 key 返回整份数据副本**。
+ *
+ * ⚠️ 曾经无参调用会走到 `_data?.[undefined] ?? []` → 返回空数组，
+ * 导致「导出数据」「创建备份」「导出字段清单」全部拿到空数据（备份文件写成 []）。
+ * 这里显式区分无参场景。
+ * @param {string} [key] - 如 'finances' | 'projects' | 'organizations' | 'players'
  * @returns {Array|Object}
  */
 export function getData(key) {
+  if (key === undefined) return _data ?? {}
   return _data?.[key] ?? []
 }
 

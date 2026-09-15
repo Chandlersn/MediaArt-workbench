@@ -144,11 +144,29 @@ class WorkbenchHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(error_response)
 
+def run_startup_checks():
+    """启动期维护：数据库完整性自检 + 备份轮转（任一步失败都不阻断启动）。"""
+    try:
+        from server.database.maintenance import check_db_integrity, rotate_backups
+        db_file = os.path.join(BASE_DIR, 'data', 'workbench.db')
+        ok, detail = check_db_integrity(db_file)
+        if ok:
+            logger.info(f"数据库完整性自检通过: {db_file}")
+        else:
+            logger.error(f"数据库完整性异常（{detail}）—— 请从 data/backup 选取一份备份恢复")
+        removed = rotate_backups(os.path.join(BASE_DIR, 'data', 'backup'), keep=20)
+        if removed:
+            logger.info(f"备份轮转：删除 {removed} 份旧备份，保留最新 20 份")
+    except Exception as e:
+        logger.warning(f"启动期维护跳过: {e}")
+
 def main():
     """Main entry point."""
     logger.info(f"Starting Workbench Server on port {PORT}")
     logger.info(f"Base directory: {BASE_DIR}")
-    
+
+    run_startup_checks()
+
     try:
         # 多线程服务器：单线程 TCPServer 会被慢请求（扫盘/递归计数）整体阻塞，
         # 导致前端并发请求排队超时、代理层直接报 500。改用每请求一线程。

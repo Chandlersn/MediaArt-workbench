@@ -39,7 +39,7 @@
           </div>
           <div class="form-group">
             <label>联系电话</label>
-            <input v-model="formData.phone" type="tel" class="form-input" placeholder="请输入11位手机号" maxlength="11" />
+            <input v-model="formData.phone" type="tel" class="form-input" placeholder="手机号或座机，如 13800138000 / 010-88886666" />
           </div>
           <div class="form-group">
             <label>机构地址</label>
@@ -67,7 +67,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useOrganizationStore } from '../stores'
-import { required, validate } from '../utils/formValidator'
+import { required, phone, validate } from '../utils/formValidator'
 import { useMessage } from '../composables/useMessage'
 import CustomSelect from '../components/CustomSelect.vue'
 
@@ -104,7 +104,8 @@ onMounted(async () => {
 const handleSave = async () => {
   const { valid, errors } = validate({
     name: [() => required(formData.value.name, '机构名称')],
-    type: [() => required(formData.value.type, '机构类型')]
+    type: [() => required(formData.value.type, '机构类型')],
+    phone: [() => phone(formData.value.phone)]
   })
 
   if (!valid) {

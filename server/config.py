@@ -4,10 +4,14 @@ Centralizes all configuration from environment variables with sensible defaults.
 """
 
 import os
+import time
 
 # Port configuration (supports environment variable override)
 PORT = int(os.environ.get('WORKBENCH_PORT', os.environ.get('PORT', 8080)))
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 进程启动时间（模块在进程启动时导入一次，用于 /api/status 的服务运行时间）
+SERVER_START_TIME = time.time()
 
 # Frontend dev server port
 VITE_DEV_SERVER_PORT = int(os.environ.get('VITE_DEV_SERVER_PORT', 3004))

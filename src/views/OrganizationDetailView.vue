@@ -109,18 +109,30 @@
       <div class="detail-section">
         <h3>关联证书</h3>
         <div v-if="orgCertStats.total > 0" class="cert-metrics">
-          <div class="cert-metric">
+          <button type="button" class="cert-metric" title="在证书管理中查看本机构全部证书" @click="goCerts()">
             <span class="num">{{ orgCertStats.total }}</span>
             <span class="lbl">证书总数</span>
-          </div>
-          <div class="cert-metric" v-for="a in orgCertStats.byAward" :key="a.award">
+          </button>
+          <button
+            type="button"
+            class="cert-metric"
+            v-for="a in orgCertStats.byAward"
+            :key="a.award"
+            :title="`在证书管理中查看「${a.award}」`"
+            @click="goCerts({ award: a.award })"
+          >
             <span class="num">{{ a.count }}</span>
             <span class="lbl">{{ a.award }}</span>
-          </div>
-          <div class="cert-metric">
+          </button>
+          <button
+            type="button"
+            class="cert-metric"
+            title="在证书管理中查看缺作品名的证书"
+            @click="goCerts({ missingWorkName: 1 })"
+          >
             <span class="num">{{ orgCertStats.missingWorkName }}</span>
             <span class="lbl">缺作品名</span>
-          </div>
+          </button>
         </div>
         <div v-else class="empty-state">该机构暂无关联证书（证书按「选送机构」名称匹配）</div>
       </div>
@@ -218,8 +230,17 @@ const orgProjects = computed(() => {
 
 const orgCertStats = computed(() => certStore.getCertStats({ orgId: org.value?.id, orgName: org.value?.name }))
 
+// 「关联证书」各指标可点击 → 跳证书管理，并按本机构（+奖项/缺作品名）预置筛选
+const goCerts = (extra = {}) => {
+  const query = { orgId: org.value?.id || '', orgName: org.value?.name || '' }
+  if (extra.award) query.award = extra.award
+  if (extra.missingWorkName) query.missingWorkName = '1'
+  router.push({ path: '/certificates', query })
+}
+
 // 机构资料相关
 const materialType = ref('')
+const uploadTitle = ref('')
 const selectedFile = ref(null)
 const materialFileInput = ref(null)
 const orgMaterialTypes = ref([])
@@ -342,6 +363,7 @@ const uploadMaterial = async () => {
       loadOrgMaterials()
       // 清空选择
       materialType.value = ''
+      uploadTitle.value = ''
       selectedFile.value = null
       if (materialFileInput.value) {
         materialFileInput.value.value = ''
@@ -417,6 +439,20 @@ const confirmDelete = async () => {
 </script>
 
 <style scoped>
+.title-input {
+  flex: 1 1 170px;
+  min-width: 120px;
+  padding: 6px 10px;
+  border: 1px solid var(--line, #d8cfc0);
+  border-radius: 6px;
+  background: var(--paper, #fbf8f1);
+  color: var(--ink, #2b2b2b);
+  font-size: 13px;
+}
+.title-input:focus {
+  outline: none;
+  border-color: var(--cinnabar, #b03a2e);
+}
 .organization-detail-page {
   padding: 24px;
 }
@@ -631,7 +667,8 @@ const confirmDelete = async () => {
 }
 
 .cert-metrics { display: flex; flex-wrap: wrap; gap: 16px; }
-.cert-metric { display: flex; flex-direction: column; align-items: center; min-width: 88px; padding: 12px 16px; background: var(--bg-secondary); border-radius: 8px; }
+.cert-metric { display: flex; flex-direction: column; align-items: center; min-width: 88px; padding: 12px 16px; background: var(--bg-secondary); border: 1px solid transparent; border-radius: 8px; font: inherit; color: inherit; cursor: pointer; transition: all 0.15s; }
+.cert-metric:hover { border-color: var(--accent); background: var(--bg-hover); }
 .cert-metric .num { font-size: 22px; font-weight: 700; color: var(--cinnabar, #b0392b); }
 .cert-metric .lbl { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
 </style>

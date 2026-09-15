@@ -2,11 +2,10 @@
 Organizations API routes module.
 """
 
-import json
 import logging
 from typing import Dict, Any
 from server.database.store import data_store
-from server.utils.auth_middleware import require_auth, require_permission
+from server.utils.auth_middleware import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +26,13 @@ class OrganizationsRouter:
             elif method == 'GET' and path.startswith('/api/organizations/'):
                 org_id = path.split('/')[-1]
                 return self.get_organization(org_id, request_context)
-            elif method == 'POST' and path == '/api/organizations':
-                return self.create_organization(request_context)
-            elif method == 'PUT' and path.startswith('/api/organizations/'):
-                org_id = path.split('/')[-1]
-                return self.update_organization(org_id, request_context)
-            elif method == 'DELETE' and path.startswith('/api/organizations/'):
-                org_id = path.split('/')[-1]
-                return self.delete_organization(org_id, request_context)
+            # ⚠️ 写入已统一走 POST /api/data/save（见前端 dataService.save）。
+            #    原 POST/PUT/DELETE /api/organizations 无人调用，第二套写路径已退役。
             else:
                 return {
                     'status': 405,
-                    'body': {'success': False, 'error': 'Method Not Allowed'},
+                    'body': {'success': False, 'error': 'Method Not Allowed',
+                             'message': '写入请使用 POST /api/data/save'},
                     'headers': {'Content-Type': 'application/json'}
                 }
         except Exception as e:
@@ -87,44 +81,5 @@ class OrganizationsRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('organizations', 'edit')
-    def create_organization(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new organization."""
-        body = request_context.get('body', b'')
-        data = json.loads(body) if body else {}
-
-        org_id = data_store.organizations.create(data)
-        return {
-            'status': 201,
-            'body': {'success': True, 'id': org_id, 'message': 'Organization created'},
-            'headers': {'Content-Type': 'application/json'}
-        }
-
-    @require_permission('organizations', 'edit')
-    def update_organization(self, org_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Update an organization."""
-        body = request_context.get('body', b'')
-        data = json.loads(body) if body else {}
-
-        success = data_store.organizations.update(org_id, data)
-        return {
-            'status': 200,
-            'body': {
-                'success': success,
-                'message': 'Organization updated' if success else 'Organization not found'
-            },
-            'headers': {'Content-Type': 'application/json'}
-        }
-
-    @require_permission('organizations', 'delete')
-    def delete_organization(self, org_id, request_context=None) -> Dict[str, Any]:
-        """Delete an organization."""
-        success = data_store.organizations.delete(org_id)
-        return {
-            'status': 200,
-            'body': {
-                'success': success,
-                'message': 'Organization deleted' if success else 'Organization not found'
-            },
-            'headers': {'Content-Type': 'application/json'}
-        }
+    # 写入方法（create/update/delete_organization）已随第二套写路径退役，
+    # 统一走 POST /api/data/save → data_store.save_all_data。

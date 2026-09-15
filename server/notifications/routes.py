@@ -170,14 +170,17 @@ class NotificationsRouter:
         if not nid:
             return _ok({'success': False, 'message': '缺少通知 id'}, 400)
         try:
-            data_store.db.execute(f"UPDATE {TABLE} SET read = 1 WHERE id = ?", (nid,))
+            # 必须提交：Database.execute() 不 commit（见 system/routes.py 同款说明）
+            with data_store.db.transaction() as conn:
+                conn.execute(f"UPDATE {TABLE} SET read = 1 WHERE id = ?", (nid,))
             return _ok({'success': True, 'message': 'ok'})
         except Exception as e:
             return _ok({'success': False, 'message': str(e)}, 500)
 
     def mark_all_read(self) -> Dict[str, Any]:
         try:
-            data_store.db.execute(f"UPDATE {TABLE} SET read = 1")
+            with data_store.db.transaction() as conn:
+                conn.execute(f"UPDATE {TABLE} SET read = 1")
             return _ok({'success': True, 'message': 'ok'})
         except Exception as e:
             return _ok({'success': False, 'message': str(e)}, 500)
@@ -204,10 +207,11 @@ class NotificationsRouter:
                 fields.append('link')
                 values.append(data.get('link') or None)
             placeholders = ', '.join(['?'] * len(fields))
-            data_store.db.execute(
-                f"INSERT INTO {TABLE} ({', '.join(fields)}) VALUES ({placeholders})",
-                tuple(values)
-            )
+            with data_store.db.transaction() as conn:
+                conn.execute(
+                    f"INSERT INTO {TABLE} ({', '.join(fields)}) VALUES ({placeholders})",
+                    tuple(values)
+                )
             return _ok({'success': True, 'id': nid})
         except Exception as e:
             logger.error(f"创建通知失败: {e}")
@@ -217,7 +221,8 @@ class NotificationsRouter:
         if not notification_id:
             return _ok({'success': False, 'message': '缺少通知 id'}, 400)
         try:
-            data_store.db.execute(f"DELETE FROM {TABLE} WHERE id = ?", (notification_id,))
+            with data_store.db.transaction() as conn:
+                conn.execute(f"DELETE FROM {TABLE} WHERE id = ?", (notification_id,))
             return _ok({'success': True, 'message': '已删除'})
         except Exception as e:
             return _ok({'success': False, 'message': str(e)}, 500)

@@ -82,7 +82,14 @@ class Database:
             raise e
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """执行 SQL 语句"""
+        """执行 SQL 语句（**不自动提交**）。
+
+        ⚠️ 写操作（INSERT/UPDATE/DELETE）请改用：
+            with data_store.db.transaction() as conn:
+                conn.execute(sql, params)
+        本方法不 commit，且连接是线程本地（每请求独立），裸写会「执行成功但不落库」，
+        并随线程结束被回滚 —— 审计日志 / 通知曾因此静默丢失。仅适合读或已在外层事务内。
+        """
         conn = self.get_connection()
         return conn.execute(sql, params)
 
@@ -166,8 +173,22 @@ class Model:
         """将数据库字段名转换为数据字段名"""
         return {self._from_db_field(k): v for k, v in data.items()}
 
+    def _new_id(self) -> str:
+        """生成主键：<表名前两位小写><10 位十六进制>，如 players -> pl3f9a2b1c4d。"""
+        import uuid
+        prefix = ''.join(c for c in self.table_name if c.isalpha())[:2].lower() or 'id'
+        return f'{prefix}{uuid.uuid4().hex[:10]}'
+
     def create(self, data: Dict) -> str:
-        """创建记录"""
+        """创建记录
+
+        ⚠️ 业务表的 id 是 `TEXT PRIMARY KEY`、**没有 AUTOINCREMENT**：调用方不带 id
+        时必须在此生成，否则会写入 NULL 主键 —— 记录之后既查不到也改不了、删不掉
+        （曾经 players / organizations 的 create 接口就踩过这个坑）。
+        """
+        data = dict(data or {})
+        if self.primary_key == 'id' and not data.get('id'):
+            data['id'] = self._new_id()
         data = self._convert_to_db(data)
         data = self._serialize(data)
 
@@ -632,11 +653,13 @@ class DataStore:
                     if key not in data:
                         continue
                     payload = data[key]
-                    # 防误删：证书列表为空时（通常是「加载失败后又触发保存」导致内存
-                    # 快照为空），不执行清空+回填，避免把库里已有的证书整表抹掉。
-                    # 前端没有「一键清空证书」功能，空列表只会出现在这种异常路径上。
-                    if label == 'certificates' and not payload:
-                        print("[SQLite] 跳过 certificates 同步：传入为空，保留库中现有数据")
+                    # 防误删（泛化自原先只保护 certificates 的写法）：凡"先清空再回填"
+                    # 的表，若本次载荷为空则**不执行清空+回填**，保留库中现有数据。
+                    # 理由：空载荷几乎只出现在异常路径上（加载失败 → 内存快照为空 →
+                    # 触发保存 → 把库里整表抹掉，且返回 success）。这比"无法通过全量
+                    # 保存清空某表"的代价小得多（逐条删除到空属罕见操作）。
+                    if clear_table and not payload:
+                        print(f"[SQLite] 跳过 {label} 同步：传入为空，保留库中现有数据")
                         continue
                     try:
                         if clear_table:

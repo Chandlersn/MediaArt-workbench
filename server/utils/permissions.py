@@ -177,19 +177,47 @@ def reload_role_matrix() -> None:
 
 # ========== 权限判断 ==========
 
+# 遗留的粗粒度权限名（旧系统残留，**不在 MODULES 中**）。
+#
+# ⚠️ 历史问题：像 resources/routes.py 的 @require_permission('manage_config') /
+# ('create') / ('delete')，这些名字不在 MODULES 枚举里，走原判定会直接落到
+# "未知模块 → False"，导致**非 admin 用户一律 403**。
+# 其中 'manage_config' 挂在 /api/data/save（全量保存，全系统主写入路径）上，
+# 使 editor 虽有 projects:edit 却无法保存任何数据（矩阵与实际执行自相矛盾）。
+#
+# 映射语义：
+#   'editor_or_above' → 编辑者及以上（粗粒度；全量保存无法按模块细分）
+#   (模块, 动作)      → 转交权限矩阵判定
+LEGACY_PERMISSION_MAP: Dict[str, Any] = {
+    'manage_config': 'editor_or_above',
+    'create': 'editor_or_above',
+    'delete': ('settings', 'delete'),
+}
+
+
 def has_permission(role: str, module: str, action: str = None) -> bool:
     """判断角色是否拥有某模块的某动作权限。
 
     签名兼容两种写法：
       - has_permission(role, module, action)
       - has_permission(role, 'module:action')   # 单字符串形式
-    admin 恒为 True；未知模块 / 缺失动作返回 False（fail-safe）。
+    admin 恒为 True；遗留权限名按 LEGACY_PERMISSION_MAP 归一；
+    未知模块 / 缺失动作返回 False（fail-safe）。
     """
     if action is None and isinstance(module, str) and ':' in module:
         module, action = module.split(':', 1)
 
     if role == 'admin':
         return True
+
+    # 遗留粗粒度权限名归一（仅在未显式传 action 时）
+    if action is None and module in LEGACY_PERMISSION_MAP:
+        spec = LEGACY_PERMISSION_MAP[module]
+        if spec == 'editor_or_above':
+            return has_higher_role(role, 'editor')
+        if isinstance(spec, tuple):
+            module, action = spec
+
     if module not in MODULES or action not in ACTIONS:
         return False
     perms = _ROLE_MATRIX_CACHE.get(role, {})

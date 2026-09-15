@@ -15,13 +15,18 @@ OrganizationDetailView / PlayerDetailView / PlayersView 依赖：
     DELETE /api/delete-player-material   {playerName,fileName}
     POST   /api/import-players           {players:[...]}
 
-目录约定（均位于资源根目录下，与资源中心共用）：
-    项目： resources/projects/<项目名>/<资料类型>/<文件>
-    机构： resources/organizations/<机构名>/<资料类型>/<文件>
-    选手： resources/players/<选手名>/<阶段>/<资料类型>/<文件>
+目录约定（位于归档目录 MediaArt_Archives/ 下，与归档管理共用同一套分类）：
 
-下载类接口通过浏览器 <a> 标签直连（不带 Authorization 头），因此不做强制鉴权，
-仅做路径安全校验；扫描/删除/导入等操作仍要求登录。
+    项目： 01_项目资料/<项目名>/<序号_类型>/<文件>
+    机构： 03_合作机构/<机构名>/<序号_类型>/<文件>
+    选手： 02_选手档案/<选手名>/<序号_类型>/<文件>
+
+分类与目录口径来自 server/archive/taxonomy.py 的单一权威定义。
+⚠️ 本模块此前误用 resources/ 根目录（数据实际在归档），导致详情页「资料区」恒为空，
+   现已修正为读取归档目录。
+
+下载类接口返回文件，可能带中文文件名，必须用 _content_disposition 构造响应头
+（send_header 以 latin-1 发送，中文名会抛 UnicodeEncodeError 并打成 500）。
 """
 
 import os
@@ -33,13 +38,17 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import unquote
 
 from server.database.store import data_store
-from server.resources.routes import get_resources_dir
+from server.resources.routes import get_archives_dir, _content_disposition
+from server.archive.taxonomy import strip_seq
 from server.utils.auth_middleware import extract_user_from_request
+from server.utils.trash import send_to_trash
 
 logger = logging.getLogger(__name__)
 
 JSON_HEADERS = {'Content-Type': 'application/json'}
-_SUB = {'project': 'projects', 'org': 'organizations', 'player': 'players'}
+
+# kind -> 归档一级分类
+_SUB = {'project': '01_项目资料', 'org': '03_合作机构', 'player': '02_选手档案'}
 
 
 def _ok(body: Any, status: int = 200) -> Dict[str, Any]:
@@ -57,7 +66,6 @@ def _qp(request_context: Dict[str, Any], key: str, default: str = '') -> str:
 def _safe_component(value: str) -> str:
     """清洗单层路径名，杜绝穿越。"""
     value = (value or '').replace('\\', '/').strip().strip('/')
-    # 只取最后一段并去除 .. 等危险片段
     value = value.split('/')[-1]
     return value.replace('..', '').strip()
 
@@ -69,6 +77,11 @@ def _safe_under(base: str, *parts: str) -> Optional[str]:
     if target != base and not target.startswith(base + os.sep):
         return None
     return target
+
+
+def _iso(ts: float) -> str:
+    from datetime import datetime
+    return datetime.fromtimestamp(ts).isoformat()
 
 
 def _flist(dirpath: str) -> List[Dict[str, Any]]:
@@ -88,16 +101,16 @@ def _flist(dirpath: str) -> List[Dict[str, Any]]:
     return out
 
 
-def _iso(ts: float) -> str:
-    from datetime import datetime
-    return datetime.fromtimestamp(ts).isoformat()
-
-
 class MaterialsRouter:
     """Router for material scan/download/delete and player import endpoints."""
 
     def __init__(self):
-        self.root = get_resources_dir()
+        # 资料实体目录位于归档目录下（此前误接 resources/，故详情页恒为空）
+        self.root = get_archives_dir()
+
+    def _entity_dir(self, kind: str, name: str) -> Optional[str]:
+        """解析 <归档分类>/<实体名> 目录，越界或非法返回 None。"""
+        return _safe_under(self.root, _SUB[kind], _safe_component(name))
 
     def _auth(self, request_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         user = extract_user_from_request(request_context)
@@ -169,39 +182,61 @@ class MaterialsRouter:
 
     # ---------- 扫描 ----------
     def scan(self, kind: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """列出 <归档分类>/<实体名>/ 下各二级目录（序号_类型）中的文件。
+
+        type 取二级目录名去掉序号前缀（如 01_策划文档 -> 策划文档）。
+        """
         name = _qp(request_context, 'name', '')
-        comp = _safe_component(name)
-        base = _safe_under(self.root, _SUB[kind], comp)
+        base = self._entity_dir(kind, name)
         materials: List[Dict[str, Any]] = []
         if base and os.path.isdir(base):
-            if kind == 'player':
-                for stage in sorted(os.listdir(base)):
-                    stage_dir = os.path.join(base, stage)
-                    if not os.path.isdir(stage_dir):
-                        continue
-                    for mtype in sorted(os.listdir(stage_dir)):
-                        type_dir = os.path.join(stage_dir, mtype)
-                        if not os.path.isdir(type_dir):
-                            continue
-                        for f in _flist(type_dir):
-                            materials.append({
-                                'type': mtype,
-                                'file_name': f['name'],
-                                'upload_date': f['upload_date'],
-                                'stage': '' if stage == '_general' else stage,
-                            })
-            else:
-                for mtype in sorted(os.listdir(base)):
-                    type_dir = os.path.join(base, mtype)
-                    if not os.path.isdir(type_dir):
-                        continue
-                    for f in _flist(type_dir):
-                        item = {'type': mtype, 'upload_date': f['upload_date'],
-                                'file_name': f['name'], 'name': f['name']}
-                        materials.append(item)
+            for sub in sorted(os.listdir(base)):
+                sub_dir = os.path.join(base, sub)
+                if not os.path.isdir(sub_dir):
+                    continue
+                mtype = strip_seq(sub)
+                for f in _flist(sub_dir):
+                    # 赛段只存在于文件名中（{主体}_{赛段}__{类型}_{序号}.ext）——
+                    # 三级目录已不含赛段层，故从文件名回解，供详情页「按赛段分组」。
+                    stage = ''
+                    if kind == 'player' and '__' in f['name']:
+                        # 赛段约定写在 `__` 之前：{主体}_{赛段}__{标题}_{日期}.ext
+                        head = f['name'].rsplit('.', 1)[0].split('__', 1)[0]
+                        if head.startswith(name + '_'):
+                            stage = head[len(name) + 1:]
+                    materials.append({
+                        'type': mtype,
+                        'file_name': f['name'],
+                        'name': f['name'],
+                        'upload_date': f['upload_date'],
+                        'stage': stage,
+                    })
         return _ok({'success': True, 'materials': materials})
 
     # ---------- 定位文件 ----------
+    def locate(self, kind: str, entity_name: str, file_name: str,
+               material_type: str = '') -> Optional[str]:
+        """在归档中定位某实体的资料文件。
+
+        供下载/删除与 system 路由的文本预览共用，避免各自实现一套定位逻辑
+        （此前文本预览用硬编码的 resources/ 目录找，永远找不到归档文件）。
+        """
+        root = self._entity_dir(kind, entity_name)
+        fn = _safe_component(unquote(file_name or ''))
+        mt = _safe_component(unquote(material_type or ''))
+        if not root or not os.path.isdir(root) or not fn:
+            return None
+        # 优先在「类型匹配」的二级目录里找，其次遍历所有二级目录
+        subs = [d for d in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, d))]
+        if mt:
+            subs.sort(key=lambda d: 0 if strip_seq(d) == mt else 1)
+        for sub in subs:
+            cand = os.path.join(root, sub, fn)
+            if os.path.isfile(cand):
+                return cand
+        cand = os.path.join(root, fn)      # 兜底：直接挂在实体目录下
+        return cand if os.path.isfile(cand) else None
+
     def _locate(self, kind: str, request_context: Dict[str, Any]) -> Optional[str]:
         if kind == 'project':
             name = _qp(request_context, 'projectName', '')
@@ -209,37 +244,9 @@ class MaterialsRouter:
             name = _qp(request_context, 'orgName', '')
         else:
             name = _qp(request_context, 'playerName', '')
-        file_name = _safe_component(unquote(_qp(request_context, 'fileName', '')))
-        material_type = _safe_component(unquote(_qp(request_context, 'materialType', '')))
-
-        root = _safe_under(self.root, _SUB[kind], _safe_component(name))
-        if not root or not os.path.isdir(root) or not file_name:
-            return None
-        if kind == 'player':
-            # players/<name>/<stage>/<type>/<file>
-            for stage in os.listdir(root):
-                stage_dir = os.path.join(root, stage)
-                if not os.path.isdir(stage_dir):
-                    continue
-                if material_type:
-                    cand = os.path.join(stage_dir, material_type, file_name)
-                    if os.path.isfile(cand):
-                        return cand
-                else:
-                    for mtype in os.listdir(stage_dir):
-                        cand = os.path.join(stage_dir, mtype, file_name)
-                        if os.path.isfile(cand):
-                            return cand
-            return None
-        # project / org: <name>/<type>/<file>
-        if material_type:
-            cand = os.path.join(root, material_type, file_name)
-            return cand if os.path.isfile(cand) else None
-        for mtype in os.listdir(root):
-            cand = os.path.join(root, mtype, file_name)
-            if os.path.isfile(cand):
-                return cand
-        return None
+        return self.locate(kind, name,
+                           _qp(request_context, 'fileName', ''),
+                           _qp(request_context, 'materialType', ''))
 
     def download(self, kind: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         target = self._locate(kind, request_context)
@@ -255,7 +262,7 @@ class MaterialsRouter:
                 'body': data,
                 'headers': {
                     'Content-Type': ctype,
-                    'Content-Disposition': f'{disp}; filename="{os.path.basename(target)}"',
+                    'Content-Disposition': _content_disposition(disp, os.path.basename(target)),
                 }
             }
         except Exception as e:
@@ -264,7 +271,6 @@ class MaterialsRouter:
     def delete(self, kind: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         body = request_context.get('body', b'')
         data = json.loads(body) if body else {}
-        # 复用 _locate 的参数命名：把 body 塞进 query_params 视图
         merged = dict(request_context)
         qp = dict(request_context.get('query_params', {}) or {})
         if kind == 'project':
@@ -281,13 +287,14 @@ class MaterialsRouter:
         if not target:
             return _ok({'success': False, 'message': '文件不存在'}, 404)
         try:
-            os.remove(target)
-            return _ok({'success': True, 'message': '已删除'})
+            rid = send_to_trash(target)
+            return _ok({'success': True, 'message': '已移入回收站' if rid else '已删除'})
         except Exception as e:
             return _ok({'success': False, 'message': str(e)}, 500)
 
     # ---------- 选手导入 ----------
     def import_players(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        from server.utils.validators import validate_person_fields
         body = request_context.get('body', b'')
         payload = json.loads(body) if body else {}
         rows = payload.get('players') or []
@@ -303,16 +310,25 @@ class MaterialsRouter:
                 failed += 1
                 errors.append(f"第 {i + 1} 行缺少姓名")
                 continue
+            phone_val = (row.get('phone') or row.get('电话') or '').strip()
+            idcard_val = (row.get('idCard') or row.get('身份证') or '').strip()
+            err = validate_person_fields({'phone': phone_val, 'idCard': idcard_val})
+            if err:
+                failed += 1
+                errors.append(f"{name}: {err}")
+                continue
             record = {
                 'id': str(uuid.uuid4()),
                 'name': name,
                 'gender': row.get('gender') or row.get('性别') or '',
                 'category': row.get('category') or row.get('类别') or '',
                 'level': row.get('level') or row.get('级别') or '',
-                'phone': row.get('phone') or row.get('电话') or '',
+                'phone': phone_val,
                 'note': row.get('note') or row.get('备注') or '',
                 'stage': row.get('stage') or row.get('阶段') or '初赛',
             }
+            if idcard_val:
+                record['idCard'] = idcard_val
             # org_id / project_id 有外键约束：留空会触发 FOREIGN KEY 失败，故仅在非空时写入
             if row.get('org_id'):
                 record['org_id'] = row['org_id']

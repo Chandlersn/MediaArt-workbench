@@ -59,9 +59,6 @@
           <span class="org-type">{{ org.type || '未分类' }}</span>
           <span class="org-contact" v-if="org.contact">{{ org.contact }}</span>
         </div>
-        <div class="org-card-footer">
-          <span class="org-meta">合作次数: {{ getCoopCount(org) }}</span>
-        </div>
       </div>
     </div>
 
@@ -83,15 +80,13 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { useOrganizationStore, useProjectStore } from '../stores'
-import { parseOrgIds } from '../utils/dataHelpers'
+import { useOrganizationStore } from '../stores'
 import Pagination from '../components/Pagination.vue'
 import { get } from '../services/http.js'
 import CustomSelect from '../components/CustomSelect.vue'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 
 const orgStore = useOrganizationStore()
-const projectStore = useProjectStore()
 const { confirm } = useConfirmDialog()
 
 const searchKeyword = ref('')
@@ -140,7 +135,6 @@ const handlePageSizeChange = (newPageSize) => {
 
 onMounted(async () => {
   await loadOrgsPaginated()
-  await projectStore.loadProjects()
 })
 
 // 搜索时重新加载
@@ -164,10 +158,6 @@ const getLevelClass = (level) => {
     '待评估': 'level-default'
   }
   return classMap[level] || 'level-default'
-}
-
-const getCoopCount = (org) => {
-  return projectStore.projects.filter(p => parseOrgIds(p.orgIds).includes(org.id)).length
 }
 
 const isAllSelected = computed(() => {
@@ -321,16 +311,6 @@ const batchDelete = async () => {
 .org-type, .org-contact {
   font-size: 14px;
   color: var(--text-secondary, #666);
-}
-
-.org-card-footer {
-  padding-top: 12px;
-  border-top: 1px solid var(--border-color, #eee);
-}
-
-.org-meta {
-  font-size: 12px;
-  color: var(--text-secondary, #999);
 }
 
 .empty-state {

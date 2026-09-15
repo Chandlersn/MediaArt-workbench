@@ -946,8 +946,16 @@ const openResourceFolder = async () => {
 const loadResourceCategories = async () => {
   try {
     await dataService.load()
-    const settings = dataService.getData('settings') || {}
-    resourceCategories.value = settings.resourceCategories || []
+    let settings = dataService.getData('settings') || {}
+    // 归档管理专属分类（项目/选手/机构）不出现在资源中心，这里一并过滤掉
+    const reserved = ['project', 'player', 'organization']
+    let cats = (settings.resourceCategories || []).filter(c => !reserved.includes(c.id))
+    if (cats.length !== (settings.resourceCategories || []).length) {
+      settings = { ...settings, resourceCategories: cats }
+      dataService.setData('settings', settings)
+      await dataService.save()
+    }
+    resourceCategories.value = cats
   } catch (e) {
     console.error('加载资源分类失败:', e)
   }
@@ -1133,50 +1141,64 @@ const exportOptions = ref({
   format: 'csv'
 })
 
-const projectFields = [
-  { key: 'name', label: '项目名称' },
-  { key: 'type', label: '项目类型' },
-  { key: 'status', label: '项目状态' },
-  { key: 'level', label: '难度等级' },
-  { key: 'manager', label: '负责人' },
-  { key: 'startDate', label: '开始日期' },
-  { key: 'endDate', label: '结束日期' },
-  { key: 'budget', label: '预算' },
-  { key: 'location', label: '地点' },
-  { key: 'description', label: '描述' },
-  { key: 'note', label: '备注' }
-]
+// 字段中文名映射（未收录的字段回退显示原始键名，保证新字段不会被静默漏掉）
+const PROJECT_FIELD_LABELS = {
+  name: '项目名称', type: '项目类型', status: '项目状态', manager: '负责人',
+  startDate: '开始日期', endDate: '结束日期', description: '描述', orgIds: '关联机构',
+  id: 'ID'
+}
+const ORG_FIELD_LABELS = {
+  name: '机构名称', type: '机构类型', level: '合作等级', contact: '联系人',
+  phone: '联系电话', address: '机构地址', note: '备注', id: 'ID'
+}
+const PLAYER_FIELD_LABELS = {
+  name: '姓名', gender: '性别', category: '艺术类别', level: '专业等级',
+  phone: '联系电话', idCard: '身份证号', orgId: '所属机构', projectId: '所属项目',
+  stage: '赛段', stageHistory: '赛段历史', note: '备注', customFields: '自定义字段',
+  id: 'ID'
+}
 
-const orgFields = [
-  { key: 'name', label: '机构名称' },
-  { key: 'type', label: '机构类型' },
-  { key: 'level', label: '合作等级' },
-  { key: 'contact', label: '联系人' },
-  { key: 'phone', label: '联系电话' },
-  { key: 'address', label: '机构地址' },
-  { key: 'note', label: '备注' }
-]
+// ⚠️ 字段清单由「实际数据」推导，而非硬编码：历史上硬编码过 level/budget/location/email
+// 等并不存在的列（导出恒为空），同时漏掉了 orgIds/idCard 等真实字段。动态推导可杜绝漂移。
+const projectFields = ref([])
+const orgFields = ref([])
+const playerFields = ref([])
+const INTERNAL_FIELDS = ['createdAt', 'updatedAt']
 
-const playerFields = [
-  { key: 'name', label: '姓名' },
-  { key: 'gender', label: '性别' },
-  { key: 'category', label: '艺术类别' },
-  { key: 'level', label: '专业等级' },
-  { key: 'phone', label: '联系电话' },
-  { key: 'email', label: '邮箱' },
-  { key: 'note', label: '备注' }
-]
+const buildFields = (records, labels) => {
+  const keys = new Set()
+  ;(records || []).forEach(r => {
+    if (r && typeof r === 'object') Object.keys(r).forEach(k => keys.add(k))
+  })
+  const out = []
+  // 先按标签映射的既定顺序，再追加映射外的字段（按字母序）
+  Object.keys(labels).forEach(k => {
+    if (keys.has(k)) { out.push({ key: k, label: labels[k] }); keys.delete(k) }
+  })
+  ;[...keys].filter(k => !INTERNAL_FIELDS.includes(k)).sort()
+    .forEach(k => out.push({ key: k, label: k }))
+  return out
+}
 
-const showExportModal = () => {
+const showExportModal = async () => {
+  try {
+    await dataService.load()
+  } catch (e) {
+    console.error('导出前加载数据失败:', e)
+  }
+  const data = dataService.getData()
+  projectFields.value = buildFields(data.projects, PROJECT_FIELD_LABELS)
+  orgFields.value = buildFields(data.organizations, ORG_FIELD_LABELS)
+  playerFields.value = buildFields(data.players, PLAYER_FIELD_LABELS)
   exportOptions.value = {
     projects: true,
     organizations: true,
     players: true,
     finances: false,
     knowledge: false,
-    projectFields: projectFields.map(f => f.key),
-    orgFields: orgFields.map(f => f.key),
-    playerFields: playerFields.map(f => f.key),
+    projectFields: projectFields.value.map(f => f.key),
+    orgFields: orgFields.value.map(f => f.key),
+    playerFields: playerFields.value.map(f => f.key),
     format: 'csv'
   }
   showExport.value = true
@@ -1184,11 +1206,11 @@ const showExportModal = () => {
 
 const allFieldsSelected = (type) => {
   if (type === 'projects') {
-    return projectFields.every(f => exportOptions.value.projectFields.includes(f.key))
+    return projectFields.value.every(f => exportOptions.value.projectFields.includes(f.key))
   } else if (type === 'organizations') {
-    return orgFields.every(f => exportOptions.value.orgFields.includes(f.key))
+    return orgFields.value.every(f => exportOptions.value.orgFields.includes(f.key))
   } else if (type === 'players') {
-    return playerFields.every(f => exportOptions.value.playerFields.includes(f.key))
+    return playerFields.value.every(f => exportOptions.value.playerFields.includes(f.key))
   }
   return false
 }
@@ -1196,11 +1218,11 @@ const allFieldsSelected = (type) => {
 const toggleAllFields = (type, event) => {
   const checked = event.target.checked
   if (type === 'projects') {
-    exportOptions.value.projectFields = checked ? projectFields.map(f => f.key) : []
+    exportOptions.value.projectFields = checked ? projectFields.value.map(f => f.key) : []
   } else if (type === 'organizations') {
-    exportOptions.value.orgFields = checked ? orgFields.map(f => f.key) : []
+    exportOptions.value.orgFields = checked ? orgFields.value.map(f => f.key) : []
   } else if (type === 'players') {
-    exportOptions.value.playerFields = checked ? playerFields.map(f => f.key) : []
+    exportOptions.value.playerFields = checked ? playerFields.value.map(f => f.key) : []
   }
 }
 
@@ -1282,7 +1304,7 @@ const exportDataCSV = async () => {
     hasData = true
     csvContent += '=== 项目数据 ===\n'
     csvContent += `${exportOptions.value.projectFields.map(f => {
-      const field = projectFields.find(pf => pf.key === f)
+      const field = projectFields.value.find(pf => pf.key === f)
       return field?.label || f
     }).join(',')}\n`
 
@@ -1296,7 +1318,7 @@ const exportDataCSV = async () => {
     hasData = true
     csvContent += '=== 机构数据 ===\n'
     csvContent += `${exportOptions.value.orgFields.map(f => {
-      const field = orgFields.find(of => of.key === f)
+      const field = orgFields.value.find(of => of.key === f)
       return field?.label || f
     }).join(',')}\n`
 
@@ -1310,7 +1332,7 @@ const exportDataCSV = async () => {
     hasData = true
     csvContent += '=== 选手数据 ===\n'
     csvContent += `${exportOptions.value.playerFields.map(f => {
-      const field = playerFields.find(pf => pf.key === f)
+      const field = playerFields.value.find(pf => pf.key === f)
       return field?.label || f
     }).join(',')}\n`
 

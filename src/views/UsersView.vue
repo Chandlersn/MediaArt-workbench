@@ -242,10 +242,12 @@ onActivated(() => {
       title="用户管理"
       description="管理系统用户账号和权限"
     >
-      <button class="btn btn-primary" @click="handleAdd">
-        <span class="btn-icon">+</span>
-        新增用户
-      </button>
+      <template #actions>
+        <button class="btn btn-primary" @click="handleAdd">
+          <span class="btn-icon">+</span>
+          新增用户
+        </button>
+      </template>
     </PageHeader>
 
     <div class="tab-nav">
@@ -398,7 +400,7 @@ onActivated(() => {
 
     <Modal
       :show="showAddModal"
-      title="新增用户"
+      :title="newUser.role === 'admin' ? '新增管理员' : '新增用户'"
       size="medium"
       @close="showAddModal = false"
     >

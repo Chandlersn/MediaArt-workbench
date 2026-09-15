@@ -2,11 +2,10 @@
 Players API routes module.
 """
 
-import json
 import logging
 from typing import Dict, Any
 from server.database.store import data_store
-from server.utils.auth_middleware import require_auth, require_permission
+from server.utils.auth_middleware import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +26,13 @@ class PlayersRouter:
             elif method == 'GET' and path.startswith('/api/players/'):
                 player_id = path.split('/')[-1]
                 return self.get_player(player_id, request_context)
-            elif method == 'POST' and path == '/api/players':
-                return self.create_player(request_context)
-            elif method == 'PUT' and path.startswith('/api/players/'):
-                player_id = path.split('/')[-1]
-                return self.update_player(player_id, request_context)
-            elif method == 'DELETE' and path.startswith('/api/players/'):
-                player_id = path.split('/')[-1]
-                return self.delete_player(player_id, request_context)
+            # ⚠️ 写入已统一走 POST /api/data/save（见前端 dataService.save）。
+            #    原 POST/PUT/DELETE /api/players 无人调用，第二套写路径已退役。
             else:
                 return {
                     'status': 405,
-                    'body': {'success': False, 'error': 'Method Not Allowed'},
+                    'body': {'success': False, 'error': 'Method Not Allowed',
+                             'message': '写入请使用 POST /api/data/save'},
                     'headers': {'Content-Type': 'application/json'}
                 }
         except Exception as e:
@@ -87,44 +81,5 @@ class PlayersRouter:
             'headers': {'Content-Type': 'application/json'}
         }
 
-    @require_permission('players', 'edit')
-    def create_player(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new player."""
-        body = request_context.get('body', b'')
-        data = json.loads(body) if body else {}
-
-        player_id = data_store.players.create(data)
-        return {
-            'status': 201,
-            'body': {'success': True, 'id': player_id, 'message': 'Player created'},
-            'headers': {'Content-Type': 'application/json'}
-        }
-
-    @require_permission('players', 'edit')
-    def update_player(self, player_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Update a player."""
-        body = request_context.get('body', b'')
-        data = json.loads(body) if body else {}
-
-        success = data_store.players.update(player_id, data)
-        return {
-            'status': 200,
-            'body': {
-                'success': success,
-                'message': 'Player updated' if success else 'Player not found'
-            },
-            'headers': {'Content-Type': 'application/json'}
-        }
-
-    @require_permission('players', 'delete')
-    def delete_player(self, player_id, request_context=None) -> Dict[str, Any]:
-        """Delete a player."""
-        success = data_store.players.delete(player_id)
-        return {
-            'status': 200,
-            'body': {
-                'success': success,
-                'message': 'Player deleted' if success else 'Player not found'
-            },
-            'headers': {'Content-Type': 'application/json'}
-        }
+    # 写入方法（create/update/delete_player）已随第二套写路径退役，
+    # 统一走 POST /api/data/save → data_store.save_all_data。
