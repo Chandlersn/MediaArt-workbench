@@ -1101,6 +1101,13 @@ watch(searchKeyword, () => {
   font-weight: 600;
 }
 
+/* 有文件的文件夹图标也染一点绿，和整体高亮呼应。
+   原本写在全局 style.css 的 .browser-file-item.has-files .file-icon 上，
+   现收回组件作用域，避免与深色主题的 !important 规则打架。 */
+.browser-file-item.has-files .file-icon {
+  filter: hue-rotate(60deg);
+}
+
 .browser-file-item.file-item {
   background: var(--surface);
 }

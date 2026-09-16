@@ -194,46 +194,50 @@
         </div>
       </div>
 
+      <!-- 资源中心：存储目录 + 文件分类合并为一个功能区 -->
       <div class="settings-section">
-        <h3>资源目录配置</h3>
-        <p class="section-desc">配置资源中心的根目录，用于存储上传的文件和素材</p>
-        <div class="archive-path-config">
-          <div class="path-input-group">
-            <input type="text" v-model="resourcePath" placeholder="请选择或输入资源目录路径" readonly>
-            <button class="btn-secondary" @click="selectResourcePath">选择目录</button>
-          </div>
-          <div class="path-info">
-            <span class="path-status" :class="{ configured: resourcePath }">{{ resourcePathStatus }}</span>
-          </div>
-        </div>
-        <div class="settings-actions" style="margin-top: 12px;">
-          <button class="btn-primary" @click="saveResourcePath">保存配置</button>
-          <button class="btn-secondary" @click="resetResourcePath">恢复默认</button>
-          <button class="btn-secondary" @click="openResourceFolder">打开目录</button>
-        </div>
-      </div>
+        <h3>资源中心配置</h3>
+        <p class="section-desc">资源中心的存储根目录，以及各文件分类对应的文件夹</p>
 
-      <div class="settings-section">
-        <h3>资源分类配置</h3>
-        <p class="section-desc">配置资源中心的文件分类及对应存储文件夹</p>
-        <div class="resource-category-config">
-          <div v-if="resourceCategories.length === 0" class="empty-hint">
-            暂无分类，点击下方按钮添加
+        <div class="config-subblock">
+          <div class="subblock-title">存储目录</div>
+          <div class="archive-path-config">
+            <div class="path-input-group">
+              <input type="text" v-model="resourcePath" placeholder="请选择或输入资源目录路径" readonly>
+              <button class="btn-secondary" @click="selectResourcePath">选择目录</button>
+            </div>
+            <div class="path-info">
+              <span class="path-status" :class="{ configured: resourcePath }">{{ resourcePathStatus }}</span>
+            </div>
           </div>
-          <div v-for="(cat, index) in resourceCategories" :key="index" class="category-item">
-            <div class="category-main">
-              <span class="category-name">{{ cat.name }}</span>
-              <span class="category-arrow">→</span>
-              <span class="category-folder">{{ cat.folder }}</span>
-            </div>
-            <div class="category-actions">
-              <button class="btn-icon-text" title="编辑" @click="editCategory(index)">✏</button>
-              <button class="btn-icon-text btn-icon-danger" title="删除" @click="removeCategory(index)">✕</button>
-            </div>
+          <div class="settings-actions" style="margin-top: 12px;">
+            <button class="btn-primary" @click="saveResourcePath">保存配置</button>
+            <button class="btn-secondary" @click="resetResourcePath">恢复默认</button>
+            <button class="btn-secondary" @click="openResourceFolder">打开目录</button>
           </div>
         </div>
-        <div class="settings-actions" style="margin-top: 12px;">
-          <button class="btn-secondary" @click="showAddCategoryModal">添加分类</button>
+
+        <div class="config-subblock">
+          <div class="subblock-title">
+            <span>文件分类</span>
+            <button class="btn-secondary btn-sm" @click="showAddCategoryModal">+ 添加分类</button>
+          </div>
+          <div class="resource-category-config">
+            <div v-if="resourceCategories.length === 0" class="empty-hint">
+              暂无分类，点击右上角「添加分类」
+            </div>
+            <div v-for="(cat, index) in resourceCategories" :key="index" class="category-item">
+              <div class="category-main">
+                <span class="category-name">{{ cat.name }}</span>
+                <span class="category-arrow">→</span>
+                <span class="category-folder">{{ cat.folder }}</span>
+              </div>
+              <div class="category-actions">
+                <button class="btn-icon-text" title="编辑" @click="editCategory(index)">✏</button>
+                <button class="btn-icon-text btn-icon-danger" title="删除" @click="removeCategory(index)">✕</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1427,6 +1431,23 @@ const exportDataCSV = async () => {
   font-size: 13px;
   color: var(--text-secondary);
   margin-bottom: 16px;
+}
+
+/* 同一功能区内的子块（如「资源中心配置」下的存储目录 / 文件分类） */
+.config-subblock + .config-subblock {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+.subblock-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
 }
 
 .system-status-grid {

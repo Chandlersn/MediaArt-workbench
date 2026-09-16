@@ -5282,20 +5282,6 @@ select optgroup {
     font-size: 12px;
 }
 
-.browser-file-item.has-files {
-    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-    border-color: #86efac;
-}
-
-.browser-file-item.has-files:hover {
-    background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
-    border-color: #4ade80;
-}
-
-.browser-file-item.has-files .file-icon {
-    filter: hue-rotate(60deg);
-}
-
 .file-meta.has-files {
     color: var(--success);
     font-weight: 500;
@@ -6376,16 +6362,6 @@ select optgroup {
 [data-theme="dark"] .action-btn.primary:hover {
     background: var(--accent-hover) !important;
     border-color: var(--accent-hover) !important;
-}
-
-[data-theme="dark"] .browser-file-item.has-files {
-    background: linear-gradient(135deg, rgba(52, 211, 153, 0.1) 0%, rgba(52, 211, 153, 0.05) 100%) !important;
-    border-color: rgba(52, 211, 153, 0.3) !important;
-}
-
-[data-theme="dark"] .browser-file-item.has-files:hover {
-    background: linear-gradient(135deg, rgba(52, 211, 153, 0.15) 0%, rgba(52, 211, 153, 0.1) 100%) !important;
-    border-color: rgba(52, 211, 153, 0.5) !important;
 }
 
 [data-theme="dark"] .folder-action-btn {

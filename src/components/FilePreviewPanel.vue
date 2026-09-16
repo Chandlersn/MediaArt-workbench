@@ -40,6 +40,24 @@
           <video v-else-if="kind === 'video'" :src="objectUrl" controls class="preview-video"></video>
           <audio v-else-if="kind === 'audio'" :src="objectUrl" controls class="preview-audio"></audio>
           <pre v-else-if="kind === 'text'" class="preview-text">{{ text }}</pre>
+          <div v-else-if="kind === 'table'" class="preview-table-wrap">
+            <template v-if="tableRows.length">
+              <div v-if="tableSheet" class="sheet-name">工作表：{{ tableSheet }}</div>
+              <table class="preview-table">
+                <tbody>
+                  <tr v-for="(row, ri) in tableRows" :key="ri">
+                    <td
+                      v-for="(cell, ci) in row"
+                      :key="ci"
+                      :class="{ 'is-header-row': ri === 0 }"
+                    >{{ cell }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="tableTruncated" class="table-note">内容较多，仅预览前 300 行 / 60 列</div>
+            </template>
+            <div v-else class="table-empty">{{ text || '无法解析该表格' }}</div>
+          </div>
 
           <div v-else class="preview-fallback">
             <div class="fallback-icon">📄</div>
@@ -91,6 +109,10 @@ const TEXT_EXTS = [
 ]
 const OFFICE_EXTS = ['doc', 'docx', 'docm', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'pptm']
 
+// 可解析为「表格」的电子表格（后端 /api/preview-text 按内容嗅探后返回 rows 结构）
+// 含旧版 .xls —— 后端支持 OLE2/BIFF，以及「.xls 实为 HTML 表格」的情况
+const SPREADSHEET_EXTS = ['xlsx', 'xlsm', 'xls']
+
 const ICON_MAP = {
   pdf: '📕', doc: '📘', docx: '📘', docm: '📘',
   xls: '📗', xlsx: '📗', xlsm: '📗', ppt: '📙', pptx: '📙', pptm: '📙',
@@ -108,6 +130,10 @@ const error = ref('')
 const text = ref('')
 const objectUrl = ref('')
 const zoomed = ref(false)
+// 表格预览（Excel）：由后端 /api/preview-text 返回 rows
+const tableRows = ref([])
+const tableSheet = ref('')
+const tableTruncated = ref(false)
 
 const displayName = computed(() =>
   props.fileName || props.filePath.split('/').pop() || '未命名文件'
@@ -129,6 +155,7 @@ const kind = computed(() => {
   if (PDF_EXTS.includes(e)) return 'pdf'
   if (VIDEO_EXTS.includes(e)) return 'video'
   if (AUDIO_EXTS.includes(e)) return 'audio'
+  if (SPREADSHEET_EXTS.includes(e)) return 'table'
   if (TEXT_EXTS.includes(e) || OFFICE_EXTS.includes(e)) return 'text'
   return 'unknown'
 })
@@ -200,6 +227,9 @@ const load = async () => {
   revokeObjectUrl()
   error.value = ''
   text.value = ''
+  tableRows.value = []
+  tableSheet.value = ''
+  tableTruncated.value = false
   zoomed.value = false
   loadedSignature.value = currentSignature.value
 
@@ -209,10 +239,16 @@ const load = async () => {
   // 兜底分支没有可加载的内容，直接展示提示
   loading.value = true
   try {
-    if (k === 'text') {
+    if (k === 'text' || k === 'table') {
       const res = await get(textUrl.value)
       if (res && res.success) {
-        text.value = res.text + (res.truncated ? '\n\n--- 内容过长，仅显示前 100000 字符 ---' : '')
+        if (k === 'table' && Array.isArray(res.rows)) {
+          tableRows.value = res.rows
+          tableSheet.value = res.sheetName || ''
+          tableTruncated.value = !!res.truncated
+        } else {
+          text.value = (res.text || '') + (res.truncated ? '\n\n--- 内容过长，仅显示前 100000 字符 ---' : '')
+        }
       } else {
         text.value = res && res.message ? res.message : '无法提取文件内容'
       }
@@ -531,5 +567,57 @@ onBeforeUnmount(() => {
 .preview-slide-enter-from,
 .preview-slide-leave-to {
   opacity: 0;
+}
+
+/* ===== 表格预览（Excel / xlsx） ===== */
+.preview-table-wrap {
+  align-self: stretch;
+  width: 100%;
+  overflow: auto;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 10px;
+}
+.sheet-name {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary, #94a3b8);
+  background: var(--bg-secondary, #f8fafc);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.preview-table {
+  border-collapse: collapse;
+  font-size: 13px;
+  color: var(--text-primary, #0f172a);
+  white-space: nowrap;
+}
+.preview-table td {
+  padding: 6px 12px;
+  border-right: 1px solid var(--border, #e2e8f0);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preview-table tr:last-child td { border-bottom: none; }
+.preview-table td:last-child { border-right: none; }
+.preview-table td.is-header-row {
+  background: var(--bg-secondary, #f8fafc);
+  font-weight: 600;
+}
+.preview-table tr:hover td { background: var(--bg-hover, #f1f5f9); }
+.table-note {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary, #94a3b8);
+}
+.table-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-tertiary, #94a3b8);
+  font-size: 13px;
 }
 </style>

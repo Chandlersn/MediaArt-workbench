@@ -433,6 +433,21 @@ class SystemRouter:
                 data = f.read()
         except Exception as e:
             return _ok({'success': False, 'message': str(e)}, 500)
+        # 电子表格 → 解析为表格数据，交前端渲染成表格
+        # 按**内容**嗅探真实格式（xlsx/xlsm、旧版 OLE2 的 xls、以及「.xls 实为 HTML 表格」）
+        if ext in ('xlsx', 'xlsm', 'xls'):
+            from server.utils.spreadsheet import spreadsheet_rows
+            try:
+                fmt, sheet, rows, truncated = spreadsheet_rows(data)
+            except Exception as e:
+                logger.warning(f"解析表格失败 {target}: {e}")
+                fmt, sheet, rows, truncated = '', '', [], False
+            if rows:
+                return _ok({'success': True, 'kind': 'table', 'format': fmt,
+                            'sheetName': sheet, 'rows': rows, 'truncated': truncated})
+            return _ok({'success': False,
+                        'message': '无法解析该表格（可能是加密文件，或格式不受支持）'})
+
         text = self._extract_text(ext, data)
         if text is None:
             return _ok({'success': False, 'message': f'.{ext} 类型暂不支持在线文本预览'})

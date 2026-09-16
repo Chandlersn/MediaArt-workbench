@@ -976,7 +976,15 @@ class DataStore:
         return config
 
     def _load_archive_config(self) -> Dict:
-        """加载归档配置"""
+        """加载归档配置；实体未配置过资料类型时回填默认值。
+
+        初始状态（首次使用、尚未保存过配置）下，「项目 / 机构资料类型」会是空的，
+        配置页与详情页上传下拉都没有可选项。这里在**该实体的键完全缺失**时回填
+        由归档分类（taxonomy.SUBDIRS）推导的默认资料类型。
+
+        注意：只在「键缺失」时回填——若用户主动把某实体的类型删空（保存了空列表，
+        键存在但值为空），则尊重用户选择，不再强加默认值。
+        """
         config = {}
         rows = self.settings.find("key LIKE 'archiveConfig_%'")
         for row in rows:
@@ -987,6 +995,13 @@ class DataStore:
                     config[key] = json.loads(value)
                 except:
                     config[key] = value
+        try:
+            from server.archive.taxonomy import default_material_types
+            for entity in ('projects', 'organizations'):
+                if entity not in config:
+                    config[entity] = {'materialTypes': default_material_types(entity)}
+        except Exception as e:
+            print(f"[DB] 回填默认资料类型失败（可忽略）: {e}")
         return config
 
     def _load_archive_mappings(self) -> Dict:

@@ -12,7 +12,7 @@
 """
 
 import re
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # 一级分类（归档根目录下的文件夹）
 ARCHIVE_TOP_DIRS = (
@@ -102,6 +102,46 @@ DEFAULT_SUBDIR = {
     '02_选手档案': '01_个人信息',
     '03_合作机构': '01_合作协议',
 }
+
+
+# ========== 默认「资料类型」（初始状态用） ==========
+
+# 实体 → 对应的一级归档分类
+ENTITY_TOP_DIR = {
+    'projects': '01_项目资料',
+    'players': '02_选手档案',
+    'organizations': '03_合作机构',
+}
+
+# 默认资料类型的图标（仅用于初始展示，用户可自行改）
+_DEFAULT_TYPE_ICONS = {
+    '策划文档': '📋', '宣传物料': '🎨', '现场记录': '📸', '项目成果': '🏆',
+    '个人信息': '🪪', '参赛记录': '🎽', '作品': '🎭', '获奖证书': '🏅', '照片': '🖼️',
+    '合作协议': '📄', '往来函件': '✉️', '结算单据': '🧾', '合作记录': '📝',
+}
+
+
+def default_material_types(entity: str) -> List[Dict[str, Any]]:
+    """返回某实体（projects / players / organizations）的默认资料类型列表。
+
+    结构对齐前端配置项：``{ id, name, icon }``。用途是「初始状态」——尚未做过
+    资料类型配置时，配置页与详情页上传下拉即可直接选用，而不是一片空白。
+
+    名称直接取自该分类的规范三级目录（去序号），因此**与 SUBDIRS 永远一致**：
+    改三级目录即同步改默认资料类型。
+    """
+    top = ENTITY_TOP_DIR.get(entity)
+    if not top:
+        return []
+    out: List[Dict[str, Any]] = []
+    for idx, sub in enumerate(SUBDIRS.get(top, ()), 1):
+        name = strip_seq(sub)
+        out.append({
+            'id': f'{entity}-mt-{idx}',
+            'name': name,
+            'icon': _DEFAULT_TYPE_ICONS.get(name, '📄'),
+        })
+    return out
 
 
 def resolve_subdir_for_type(top_dir: str, material_type: str) -> str:
