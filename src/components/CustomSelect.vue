@@ -25,16 +25,18 @@
           :style="dropdownStyle"
           ref="dropdownRef"
         >
-          <div
-            v-for="option in effectiveOptions"
-            :key="option.value"
-            class="custom-select-option"
-            :class="{ 'is-selected': isOptionSelected(option.value) }"
-            @click.stop="selectOption(option)"
-          >
-            <span class="option-check" v-if="isOptionSelected(option.value)">✓</span>
-            <span class="option-label">{{ option.label }}</span>
-          </div>
+          <template v-for="row in renderRows" :key="row.key">
+            <div v-if="row.header" class="custom-select-group">{{ row.header }}</div>
+            <div
+              v-else
+              class="custom-select-option"
+              :class="{ 'is-selected': isOptionSelected(row.value) }"
+              @click.stop="selectOption(row)"
+            >
+              <span class="option-check" v-if="isOptionSelected(row.value)">✓</span>
+              <span class="option-label">{{ row.label }}</span>
+            </div>
+          </template>
           <div v-if="effectiveOptions.length === 0" class="custom-select-empty">
             暂无选项
           </div>
@@ -61,7 +63,8 @@ const emit = defineEmits(['update:modelValue', 'change'])
 const slots = useSlots()
 
 // 支持把原生 <option> 作为默认插槽传入（全局替换 <select> 时无需逐个改写选项数组）：
-// 解析插槽里的 <option value=..>label</option> 节点，动态 v-for 展开后的选项同样生效。
+// 解析插槽里的 <option value=..>label</option> 节点，动态 v-for 展开后的选项同样生效；
+// <optgroup label=".."> 解析为分组，选项携带 group，下拉里渲染组标题行。
 const extractText = (node) => {
   if (node == null) return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)
@@ -76,10 +79,10 @@ const slotOptions = computed(() => {
   let nodes = def()
   if (!Array.isArray(nodes)) nodes = [nodes]
   const out = []
-  const walk = (list) => {
+  const walk = (list, group = '') => {
     for (const n of list) {
       if (!n) continue
-      if (Array.isArray(n)) { walk(n); continue }
+      if (Array.isArray(n)) { walk(n, group); continue }
       if (typeof n === 'string' || typeof n === 'number') continue
       if (n.type === 'option') {
         const p = n.props || {}
@@ -91,12 +94,20 @@ const slotOptions = computed(() => {
         } else if (Array.isArray(c)) {
           label = c.map(extractText).join('')
         }
-        out.push({ value: p.value, label: String(label == null ? '' : label).trim() })
+        out.push({ value: p.value, label: String(label == null ? '' : label).trim(), group })
+      } else if (n.type === 'optgroup') {
+        const g = String((n.props && n.props.label) || '')
+        const c = n.children
+        if (Array.isArray(c)) walk(c, g)
+        else if (c && typeof c === 'object' && typeof c.default === 'function') {
+          const r = c.default()
+          if (Array.isArray(r)) walk(r, g)
+        }
       } else if (n.children && Array.isArray(n.children)) {
-        walk(n.children)
+        walk(n.children, group)
       } else if (n.children && typeof n.children === 'object' && typeof n.children.default === 'function') {
         const r = n.children.default()
-        if (Array.isArray(r)) walk(r)
+        if (Array.isArray(r)) walk(r, group)
       }
     }
   }
@@ -108,6 +119,21 @@ const slotOptions = computed(() => {
 const effectiveOptions = computed(() =>
   (props.options && props.options.length) ? props.options : slotOptions.value
 )
+
+// 渲染行：在分组切换处插入组标题行（无分组的选项排在最前时先渲染普通行）
+const renderRows = computed(() => {
+  const rows = []
+  let lastGroup = null
+  for (const o of effectiveOptions.value) {
+    const g = o.group || ''
+    if (g !== lastGroup) {
+      if (g) rows.push({ header: g, key: 'h:' + g })
+      lastGroup = g
+    }
+    rows.push({ ...o, key: 'o:' + o.value })
+  }
+  return rows
+})
 
 const isOpen = ref(false)
 const selectRef = ref(null)
@@ -341,6 +367,20 @@ onUnmounted(() => {
 
 .option-label {
   flex: 1;
+}
+
+.custom-select-group {
+  padding: 7px 12px 3px;
+  font-size: 11px;
+  color: var(--text-tertiary, #94a3b8);
+  user-select: none;
+  border-top: 1px solid var(--border, #e2e8f0);
+  margin-top: 3px;
+}
+
+.custom-select-group:first-child {
+  border-top: none;
+  margin-top: 0;
 }
 
 .custom-select-empty {

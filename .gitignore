@@ -43,10 +43,13 @@ jwt_config.json
 data_backup*/
 
 # ===== 用户内容 / 业务素材（非源码，体积大且含隐私，勿入仓） =====
-resources/
-assets/
-MediaArt_Archives/
-Documents/
+# ⚠️ 必须带前导斜杠：不带斜杠的模式会匹配**任意层级**的同名目录，
+# 曾把后端代码目录 server/resources/ 一起忽略，导致该模块从未被提交、
+# clone 后 /api/data/* 与文件接口全部 404。锚定到仓库根即可避免。
+/resources/
+/assets/
+/MediaArt_Archives/
+/Documents/
 
 # ===== 环境配置（仅保留 .env.example 模板） =====
 .env

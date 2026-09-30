@@ -51,19 +51,32 @@ DIST_DIR_IN_BASE = os.path.join(BASE_DIR, 'dist')
 APP_DIST_DIR = os.path.join(APP_DIR, 'dist')
 EXTRA_RESOURCES_DIST = os.path.join(BASE_DIR, 'dist')
 
-# Determine static directory
-if os.path.exists(EXTRA_RESOURCES_DIST):
-    STATIC_DIR = EXTRA_RESOURCES_DIST
-    STATIC_BASE_URL = ''
-elif os.path.exists(APP_DIST_DIR):
-    STATIC_DIR = APP_DIST_DIR
-    STATIC_BASE_URL = ''
-elif os.path.exists(DIST_DIR_IN_BASE):
-    STATIC_DIR = BASE_DIR
-    STATIC_BASE_URL = ''
-else:
-    STATIC_DIR = BASE_DIR
-    STATIC_BASE_URL = ''
+# 静态资源根目录。
+#
+# ⚠️ 此前这段逻辑有缺陷：只看 dist/ **目录**是否存在，且最后一个分支把 STATIC_DIR
+#    设成 BASE_DIR（仓库根）——那里是**开发版** index.html，引用 /src/main.js，
+#    只有 Vite dev server 能解析。后果是打包后的桌面端（Electron 加载
+#    http://localhost:8080）拿不到构建产物，页面直接白屏。
+#    现改为：以 `dist/index.html` 是否存在作为「已构建」的判据。
+def _pick_static_dir() -> str:
+    for cand in (DIST_DIR_IN_BASE, APP_DIST_DIR):
+        if os.path.isfile(os.path.join(cand, 'index.html')):
+            return cand
+    return BASE_DIR
+
+
+STATIC_DIR = _pick_static_dir()
+STATIC_BASE_URL = ''
+
+# 前端是否已构建。False 时后端只能提供开发版页面，需配合 Vite dev server 使用。
+FRONTEND_BUILT = STATIC_DIR != BASE_DIR
+
+# 业务目录前缀：素材库 / 归档 / 模板 / 运行时数据。
+# 这些**始终**在仓库根下，不能跟着 STATIC_DIR 走进 dist/。
+# 注意 /assets/ 两边都可能出现（前端构建产物 vs 业务素材），解析时先查构建产物再回退。
+BUSINESS_PATH_PREFIXES = (
+    '/resources/', '/assets/', '/MediaArt_Archives/', '/templates/', '/data/',
+)
 
 # ========== Environment Detection ==========
 def is_development():

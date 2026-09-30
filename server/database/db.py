@@ -602,6 +602,7 @@ class DataStore:
             'checklists': timed_load('checklists', lambda: self.checklists.get_all()),
             'certificates': timed_load('certificates', lambda: self.certificates.get_all()),
             'certSettings': timed_load('certSettings', lambda: self._load_cert_settings()),
+            'printTemplates': timed_load('printTemplates', lambda: self._load_print_templates()),
             'projectChecklists': timed_load('projectChecklists', lambda: self._load_project_checklists()),
             'auditLogs': timed_load('auditLogs', lambda: self.audit_logs.get_all(order_by='created_at DESC', limit=100)),
             'notifications': timed_load('notifications', lambda: self.notifications.get_all(order_by='created_at DESC', limit=50)),
@@ -620,7 +621,21 @@ class DataStore:
           杜绝“删了却没数据可写”导致的数据丢失。
           （原先无条件 DELETE FROM templates / audit_logs，而这两张表没有任何
             写入器，等于每次保存都把表清空一次。）
+
+        ⚠️ 空表处理的区分（重要）：
+        「载荷为空」有两种含义完全不同的来源，必须靠客户端标记区分：
+
+          1) 异常路径：加载失败 → 内存快照为空 → 触发保存 → 会抹掉整表；
+          2) 正常操作：用户确实删掉了某张表的**最后一条**记录。
+
+        此前只按「载荷是否为空」判断，把 (2) 也一并挡下 —— 表现为
+        「删掉最后一条记录，接口返回成功、刷新后又出现」。
+        现在由前端在提交时带上 `_snapshot: true`（表示"这是用户正在操作的完整快照"）：
+        带标记 → 允许清空到 0 条；不带标记 → 沿用保守策略，跳过清空。
         """
+        # 客户端声明「这是一份完整快照」时，空数组视为用户真实的清空意图
+        allow_empty = bool(data.get('_snapshot'))
+
         failures = []
         try:
             with self.db.transaction() as conn:
@@ -632,6 +647,7 @@ class DataStore:
                 #      checklist_states / templates / audit_logs 的 DELETE 已下沉到
                 #      各自的 _save_* 内部；此处只为没有内建清空的表补 DELETE。
                 sections = [
+                    ('printTemplates', self._save_print_templates, 'printTemplates', 'print_templates'),
                     ('projects', self._save_projects, 'projects', 'projects'),
                     ('organizations', self._save_organizations, 'organizations', 'organizations'),
                     ('users', self._save_users, 'users', None),
@@ -654,12 +670,15 @@ class DataStore:
                         continue
                     payload = data[key]
                     # 防误删（泛化自原先只保护 certificates 的写法）：凡"先清空再回填"
-                    # 的表，若本次载荷为空则**不执行清空+回填**，保留库中现有数据。
-                    # 理由：空载荷几乎只出现在异常路径上（加载失败 → 内存快照为空 →
-                    # 触发保存 → 把库里整表抹掉，且返回 success）。这比"无法通过全量
-                    # 保存清空某表"的代价小得多（逐条删除到空属罕见操作）。
-                    if clear_table and not payload:
-                        print(f"[SQLite] 跳过 {label} 同步：传入为空，保留库中现有数据")
+                    # 的表，若本次载荷为空**且客户端未声明这是完整快照**，则不执行
+                    # 清空+回填，保留库中现有数据。
+                    # 理由：空载荷可能来自异常路径（加载失败 → 内存快照为空 → 触发
+                    # 保存 → 把库里整表抹掉，且返回 success）。但若客户端明确声明了
+                    # `_snapshot`，说明这是用户正在操作的完整快照，空数组就是"删光了"，
+                    # 必须如实落库，否则删掉最后一条记录会失败。
+                    if clear_table and not payload and not allow_empty:
+                        print(f"[SQLite] 跳过 {label} 同步：传入为空且未声明完整快照，"
+                              f"保留库中现有数据（防误删）")
                         continue
                     try:
                         if clear_table:
@@ -900,6 +919,77 @@ class DataStore:
                 continue
             model = NotificationModel(self.db)
             self._upsert('notifications', model._serialize(model._convert_to_db(notification)), conn)
+
+    def _load_print_templates(self) -> List[Dict[str, Any]]:
+        """加载打印模板列表（底图 + 勾选字段）。
+
+        前端持有的字段名是 `printTemplates`，存储时转回下划线列名。
+        `fields` 是 JSON 字符串，这里反序列化成对象返回。
+        """
+        rows = self.db.fetchall(
+            "SELECT * FROM print_templates ORDER BY created_at DESC")
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = {self._snake_to_camel(k): v for k, v in row.items()}
+            raw_fields = item.pop('fields', None)
+            item['fields'] = json.loads(raw_fields) if raw_fields else []
+            out.append(item)
+        return out
+
+    @staticmethod
+    def _snake_to_camel(name: str) -> str:
+        parts = (name or '').split('_')
+        return parts[0] + ''.join(p.capitalize() for p in parts[1:])
+
+    def _save_print_templates(self, templates, conn):
+        """保存打印模板列表。
+
+        ⚠️ 与 `templates`（合同/表单，存在 settings 里）是两张不同的表，不要混淆。
+        """
+        if templates is None:
+            return True
+        if not isinstance(templates, list):
+            return False
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        for t in templates:
+            if not isinstance(t, dict):
+                continue
+            tid = (t.get('id') or '').strip()
+            if not tid:
+                continue
+            fields = t.get('fields')
+            fields_json = json.dumps(fields, ensure_ascii=False) if isinstance(fields, list) else (
+                fields if isinstance(fields, str) else '[]')
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO print_templates
+                    (id, name, doc_type, background, page_width, page_height, page_size,
+                     fields, project_id, cert_round, year,
+                     source_path, source_ext, source_mtime, note, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    tid,
+                    t.get('name') or tid,
+                    t.get('docType') or 'certificate',
+                    t.get('background') or '',
+                    t.get('pageWidth'),
+                    t.get('pageHeight'),
+                    t.get('pageSize'),
+                    fields_json,
+                    t.get('projectId'),
+                    t.get('certRound'),
+                    t.get('year'),
+                    t.get('sourcePath'),
+                    t.get('sourceExt'),
+                    t.get('sourceMtime'),
+                    t.get('note'),
+                    t.get('createdAt') or now,
+                    now,
+                )
+            )
+        return True
 
     def _save_templates(self, templates, conn):
         """保存模板数据

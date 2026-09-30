@@ -60,6 +60,12 @@ export function setData(key, value) {
  *
  * 防抹库守卫：调用方必须确保数据已加载。若尚未加载，先尝试一次安全加载；
  * 加载失败则中止保存（绝不拿空/陈旧数据覆盖服务端全量数据）。
+ *
+ * 提交时额外带上 `_snapshot: true`，向服务端声明「这是用户正在操作的完整快照」。
+ * 服务端据此区分两种"空数组"：
+ *   - 带标记 → 用户确实把某张表删空了，如实落库；
+ *   - 不带标记 → 疑似异常路径的空载荷，保守跳过清空（防误删）。
+ * 没有这个标记时，删掉某张表最后一条记录会被服务端挡下，刷新后又出现。
  */
 export async function save() {
   if (!_data) {
@@ -70,7 +76,7 @@ export async function save() {
     }
   }
   if (!_data) throw new Error('数据未加载，无法保存')
-  const result = await post(SAVE_URL, _data)
+  const result = await post(SAVE_URL, { ..._data, _snapshot: true })
   if (!result.success) throw new Error(result.message || '保存失败')
   return result
 }

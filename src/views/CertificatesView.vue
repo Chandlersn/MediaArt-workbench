@@ -6,6 +6,9 @@
         <button class="btn-secondary btn-sm" :class="{ active: showSync }" @click="showSync = !showSync">从选手同步</button>
         <button class="btn-secondary btn-sm" :class="{ active: preview }" @click="triggerFile">导入台账</button>
         <button class="btn-secondary btn-sm" :class="{ active: showRules }" @click="showRules = !showRules">编号规则</button>
+        <button class="btn-primary btn-sm" :disabled="selectedCount === 0" @click="openPrint">
+          批量打印{{ selectedCount ? `（${selectedCount}）` : '' }}
+        </button>
         <button class="btn-primary btn-sm" :disabled="visibleCertificates.length === 0" @click="exportLedger(filtered, '仅导出当前筛选结果')">
           导出当前台账
         </button>
@@ -14,6 +17,18 @@
         </button>
         <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display: none" @change="onFileChange" />
       </div>
+    </div>
+
+    <!-- 字段完整度概览：空值在维护数据时就可见（只提示不拦截，补全后打印更完整） -->
+    <div v-if="incompleteFields.length" class="completeness-bar">
+      <span class="bar-label">字段完整度：</span>
+      <span
+        v-for="f in incompleteFields"
+        :key="f.column"
+        class="comp-item"
+        :title="`${f.label} 还有 ${f.missing} 份未填（共 ${f.total} 份）`"
+      >{{ f.label }} {{ f.total - f.missing }}/{{ f.total }}</span>
+      <span class="bar-hint">— 补全后批量打印不会留空</span>
     </div>
 
     <!-- 自动关联：从已有选手/机构数据生成证书 -->
@@ -204,6 +219,7 @@
       <table class="cert-table">
         <thead>
           <tr>
+            <th class="sel-col"><input type="checkbox" :checked="allPagedSelected" title="全选本页" @change="toggleSelectPage" /></th>
             <th>证书编号</th>
             <th>选手姓名</th>
             <th>组别</th>
@@ -218,6 +234,7 @@
         </thead>
         <tbody>
           <tr v-for="c in pagedRows" :key="c.certNumber">
+            <td class="sel-col"><input type="checkbox" :checked="selectedKeys.has(certKey(c))" @change="toggleSelect(c)" /></td>
             <td class="mono">{{ c.certNumber }}</td>
             <td>{{ c.playerName }}</td>
             <td>{{ c.groupName }}</td>
@@ -235,6 +252,11 @@
             </td>
             <td>
               <div class="row-actions">
+                <span
+                  v-if="printHist(c)"
+                  class="print-hist"
+                  :title="`最近打印：${printHist(c).last}（${printHist(c).title}）`"
+                >打印 {{ printHist(c).count }} 次</span>
                 <button class="btn-text" @click="openEdit(c)">填写</button>
                 <span class="row-sep"></span>
                 <button class="btn-text danger" @click="removeCert(c)">删除</button>
@@ -259,6 +281,50 @@
     </div>
     <div v-else-if="visibleCertificates.length === 0" class="empty-state">
       当前会话暂无证书。可在上方「导入会话」中切换到其他批次，或导入新的台账 / 从选手同步。
+    </div>
+
+    <!-- 批量打印弹窗 -->
+    <div v-if="showPrint" class="drawer-mask" @click.self="showPrint = false">
+      <div class="print-modal">
+        <div class="drawer-head">
+          <strong>批量打印证书（已选 {{ selectedList.length }} 份）</strong>
+          <button class="btn-text" @click="showPrint = false">关闭</button>
+        </div>
+        <div class="drawer-body">
+          <div v-if="printTemplates.length === 0" class="muted">
+            还没有打印模板。请先到左侧导航「模板管理」上传底图、勾选字段创建模板。
+          </div>
+          <template v-else>
+            <div class="drawer-row">
+              <span class="drawer-label">打印模板</span>
+              <CustomSelect v-model="printTplId" style="width: 100%">
+                <option v-for="t in printTemplates" :key="t.id" :value="t.id">
+                  {{ t.name }}（{{ (t.fields || []).length }} 个字段）
+                </option>
+              </CustomSelect>
+            </div>
+            <div class="drawer-row">
+              <span class="drawer-label">已选证书</span>
+              <div class="print-sel-list">
+                <span v-for="c in selectedList.slice(0, 20)" :key="certKey(c)" class="pill mono">{{ c.certNumber }} {{ c.playerName }}</span>
+                <span v-if="selectedList.length > 20" class="muted">…等 {{ selectedList.length }} 份</span>
+              </div>
+            </div>
+            <div v-if="printWarnings.length" class="print-warn">
+              <div class="side-title">部分字段取值为空，请确认：</div>
+              <div v-for="w in printWarnings" :key="w.column" class="muted">
+                {{ w.label }}：{{ w.count }} 份为空
+              </div>
+            </div>
+            <div class="muted">生成后自动打开打印预览窗口，请在打印对话框中选择「缩放 100%」并关闭页眉页脚。</div>
+          </template>
+        </div>
+        <div class="drawer-foot">
+          <button class="btn-primary" :disabled="printing || !printTplId" @click="runPrint">
+            {{ printing ? '生成中…' : '生成并打印' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 填写抽屉 -->
@@ -348,6 +414,8 @@ import { useOrganizationStore } from '../stores/organization'
 import { usePlayerStore } from '../stores/player'
 import { parseCertificateFile } from '../services/certificateImport'
 import { exportCertificateLedger, ROUND_ORDER } from '../services/certificateExport'
+import { generatePrint, archivePrint, openHtmlWindow, fetchPrintLogs, fetchFieldCatalog } from '../services/print'
+import * as dataService from '../services/dataService'
 import CustomSelect from '../components/CustomSelect.vue'
 import Pagination from '../components/Pagination.vue'
 import Chart from 'chart.js/auto'
@@ -614,6 +682,108 @@ const setPacked = async (c) => {
   }
 }
 
+// ===== 勾选 + 批量打印 =====
+const certKey = (c) => `${c.certNumber}|${c.sessionId || ''}`
+const selectedKeys = ref(new Set())
+const toggleSelect = (c) => {
+  const next = new Set(selectedKeys.value)
+  next.has(certKey(c)) ? next.delete(certKey(c)) : next.add(certKey(c))
+  selectedKeys.value = next
+}
+const toggleSelectPage = () => {
+  const next = new Set(selectedKeys.value)
+  const all = allPagedSelected.value
+  pagedRows.value.forEach(c => all ? next.delete(certKey(c)) : next.add(certKey(c)))
+  selectedKeys.value = next
+}
+const allPagedSelected = computed(() =>
+  pagedRows.value.length > 0 && pagedRows.value.every(c => selectedKeys.value.has(certKey(c))))
+// 勾选与筛选独立：按住的勾选集合打印，不受后续筛选影响
+const selectedList = computed(() => visibleCertificates.value.filter(c => selectedKeys.value.has(certKey(c))))
+const selectedCount = computed(() => selectedList.value.length)
+
+const showPrint = ref(false)
+const printTemplates = ref([])
+const printTplId = ref('')
+const printing = ref(false)
+const printWarnings = ref([])
+
+const openPrint = async () => {
+  printWarnings.value = []
+  await dataService.load()
+  printTemplates.value = (dataService.getData('printTemplates') || [])
+    .filter(t => (t.docType || 'certificate') === 'certificate')
+  if (!printTemplates.value.length) {
+    warning('还没有证书打印模板，请先到「模板管理」创建')
+    router.push('/templates')
+    return
+  }
+  printTplId.value = printTemplates.value[0]?.id || ''
+  showPrint.value = true
+}
+
+const runPrint = async () => {
+  const tpl = printTemplates.value.find(t => t.id === printTplId.value)
+  if (!tpl) { warning('请选择打印模板'); return }
+  if (!selectedList.value.length) { warning('请先勾选要打印的证书'); return }
+
+  // 打印前校验：勾选字段在所选证书里存在未填写值 → 弹窗提醒，默认中断。
+  // 字段列名兼容三种存法：数据记录键（驼峰）、dbColumn、历史模板的下划线列名。
+  const snakeToCamel = (s) => String(s).replace(/_([a-z])/g, (_, ch) => ch.toUpperCase())
+  const missing = []
+  for (const f of (tpl.fields || [])) {
+    if (!f.column) continue
+    const n = selectedList.value.filter(c => {
+      const v = c[f.column] ?? c[f.dbColumn] ?? c[snakeToCamel(f.column)]
+      return v === null || v === undefined || String(v).trim() === ''
+    }).length
+    if (n) missing.push({ label: f.label || f.column, count: n })
+  }
+  if (missing.length) {
+    const detail = missing.map(m => `「${m.label}」${m.count} 份未填写`).join('，')
+    const go = await confirm({
+      title: '存在未填写的打印字段',
+      message: `本次所选证书中，${detail}。空白位置将直接留空打印。`,
+      confirmText: '仍要打印',
+      cancelText: '中断打印',
+      type: 'warning'
+    })
+    if (!go) return // 中断，不生成、不归档
+  }
+
+  printing.value = true
+  printWarnings.value = []
+  try {
+    const res = await generatePrint({
+      templateId: tpl.id,
+      certNumbers: selectedList.value.map(c => ({ certNumber: c.certNumber, sessionId: c.sessionId || '' })),
+      sessionId: ''
+    })
+    if (!res.success) throw new Error(res.message || '生成失败')
+    printWarnings.value = res.warnings || []
+    openHtmlWindow(res.html)
+    // 生成即归档 + 留痕（失败不阻断打印）
+    try {
+      await archivePrint({
+        html: res.html,
+        templateId: tpl.id,
+        docType: tpl.docType || 'certificate',
+        title: tpl.name,
+        itemCount: res.itemCount,
+        refIds: selectedList.value.map(c => c.certNumber)
+      })
+    } catch (e) { console.warn('打印留痕失败（不阻断）:', e) }
+    success(`已生成 ${res.itemCount} 份证书，请在打印窗口确认后打印`)
+    loadPrintIndex() // 打印历史即时更新
+    showPrint.value = false
+    selectedKeys.value = new Set()
+  } catch (err) {
+    toastError('批量打印失败：' + (err.message || err))
+  } finally {
+    printing.value = false
+  }
+}
+
 const removeCert = async (c) => {
   const ok = await confirm({
     title: '删除证书',
@@ -733,6 +903,52 @@ const renderCharts = () => {
 
 watch([stats, filtered], () => { nextTick(renderCharts) }, { deep: true })
 
+// ===== 字段完整度概览 + 打印历史（数据透明，不拦截） =====
+// 字段清单来自打印字段目录（台账真实数据派生）；空值在维护页即可见，
+// 不用到打印弹窗才发现——符合「出口把关 + 过程透明」的分层。
+const fieldCatalog = ref([])
+const printLogIndex = ref({})
+
+const loadFieldCatalog = async () => {
+  try {
+    const res = await fetchFieldCatalog()
+    if (res.success) fieldCatalog.value = res.fields || []
+  } catch { /* 完整度概览失败不阻断页面 */ }
+}
+
+const incompleteFields = computed(() => {
+  const total = certificates.value.length
+  if (!total) return []
+  return fieldCatalog.value
+    .map(f => {
+      const missing = certificates.value.filter(c => {
+        const v = c[f.column] ?? c[f.dbColumn]
+        return v === null || v === undefined || String(v).trim() === ''
+      }).length
+      return { ...f, total, missing }
+    })
+    .filter(f => f.missing > 0)
+})
+
+const loadPrintIndex = async () => {
+  try {
+    const res = await fetchPrintLogs('certificate')
+    const map = {}
+    for (const l of ((res.success && res.logs) || [])) {
+      let ids = []
+      try { ids = typeof l.ref_ids === 'string' ? JSON.parse(l.ref_ids) : (l.ref_ids || []) } catch { ids = [] }
+      for (const n of ids) {
+        const e = map[n] || (map[n] = { count: 0, last: '', title: '' })
+        e.count += 1
+        if (String(l.printed_at || '') > e.last) { e.last = l.printed_at; e.title = l.title }
+      }
+    }
+    printLogIndex.value = map
+  } catch { /* 打印历史失败不阻断页面 */ }
+}
+
+const printHist = (c) => printLogIndex.value[c.certNumber]
+
 onMounted(async () => {
   await Promise.all([
     certStore.loadCertificates(),
@@ -742,6 +958,7 @@ onMounted(async () => {
   ].filter(Boolean))
   syncRulesFromStore()
   applyRouteQuery()
+  await Promise.all([loadFieldCatalog(), loadPrintIndex()])
   await nextTick()
   renderCharts()
 })
@@ -755,6 +972,7 @@ onActivated(async () => {
   ].filter(Boolean))
   syncRulesFromStore()
   applyRouteQuery()
+  await Promise.all([loadFieldCatalog(), loadPrintIndex()])
   await nextTick()
   renderCharts()
 })
@@ -847,6 +1065,21 @@ watch(() => route.query, () => applyRouteQuery())
 /* 行操作：填写与删除拉开间距，避免误点 */
 .row-actions { display: inline-flex; align-items: center; gap: 14px; }
 .row-sep { width: 1px; height: 14px; background: var(--border); }
+/* 字段完整度概览条 */
+.completeness-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; background: var(--bg-secondary); border: 1px dashed var(--border); border-radius: 10px; padding: 8px 14px; margin-bottom: 14px; font-size: 13px; color: var(--text-secondary); }
+.completeness-bar .bar-label { color: var(--text-primary); font-weight: 600; }
+.completeness-bar .comp-item { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 12px; padding: 2px 10px; }
+.completeness-bar .bar-hint { opacity: 0.8; }
+/* 行内打印历史 */
+.print-hist { color: var(--text-secondary); font-size: 12px; cursor: default; }
+
+/* 勾选列与批量打印弹窗 */
+.sel-col { width: 36px; text-align: center; }
+.print-modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 520px; max-width: 94vw; max-height: 86vh; background: var(--bg-primary); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.25); }
+.print-sel-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.print-sel-list .pill { display: inline-block; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; font-size: 12px; }
+.print-warn { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.print-warn .side-title { font-size: 13px; font-weight: 600; color: #8a6d00; }
 
 /* 编号规则面板 */
 .rules-grid { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin: 12px 0; }

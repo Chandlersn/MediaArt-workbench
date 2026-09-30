@@ -333,7 +333,11 @@
                 <button class="btn-secondary btn-sm" :disabled="!backup.has_data || restoring" @click="restoreBackup(backup)">
                   {{ restoring && restoreTarget === backup.name ? '恢复中...' : '恢复' }}
                 </button>
-                <button class="btn-icon-text btn-icon-danger" @click="deleteBackupConfirm(backup)">✕</button>
+                <button
+                  class="btn-icon-text btn-icon-danger"
+                  :disabled="deletingBackup === backup.name"
+                  @click="deleteBackupConfirm(backup)"
+                >{{ deletingBackup === backup.name ? '…' : '✕' }}</button>
               </div>
             </div>
           </div>
@@ -1122,14 +1126,31 @@ const restoreBackup = async (backup) => {
   }
 }
 
+// 正在删除的备份名（用于按钮禁用态）
+const deletingBackup = ref('')
+
 const deleteBackupConfirm = async (backup) => {
   const confirmed = await confirm({
     title: '删除备份确认',
-    message: `确定要删除备份 "${backup.name}" 吗？此操作不可撤销。`,
+    message: `确定要删除备份 "${backup.name}" 吗？删除后可在回收站中恢复。`,
     type: 'warning'
   })
   if (!confirmed) return
-  warning(`暂不支持在界面删除服务端备份，请手动删除 data/backup/${backup.name} 目录`)
+
+  deletingBackup.value = backup.name
+  try {
+    const res = await post('/api/data/delete-backup', { name: backup.name })
+    if (res.success) {
+      success(res.message || '备份已删除')
+      await loadBackups()
+    } else {
+      error(res.message || '删除失败')
+    }
+  } catch (e) {
+    error(`删除失败: ${e.message}`)
+  } finally {
+    deletingBackup.value = ''
+  }
 }
 
 const showExport = ref(false)

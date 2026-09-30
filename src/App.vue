@@ -1,6 +1,6 @@
 <template>
-  <div class="app-container">
-    <header class="app-header">
+  <div class="app-container" :class="{ 'public-route': isPublicRoute }">
+    <header class="app-header" v-if="!isPublicRoute">
       <div class="logo">
         <div class="logo-icon">M</div>
         <h1>媒体艺术智能工作台</h1>
@@ -32,7 +32,7 @@
       </div>
     </header>
 
-    <nav class="sidebar">
+    <nav class="sidebar" v-if="!isPublicRoute">
       <div class="nav-section">
         <div class="nav-title">核心功能</div>
         <ul class="nav-menu">
@@ -106,6 +106,13 @@
           </li>
           <li
             class="nav-item"
+            :class="{ active: $route.path.startsWith('/print') }"
+            @click="navigateTo('/print')"
+          >
+            <span>打印中心</span>
+          </li>
+          <li
+            class="nav-item"
             :class="{ active: $route.path.startsWith('/archive') }"
             @click="navigateTo('/archive')"
           >
@@ -175,11 +182,14 @@
       </router-view>
     </main>
 
-    <LoginModal v-model="showLogin" @login-success="handleLoginSuccess" />
+    <LoginModal v-if="!isPublicRoute" v-model="showLogin" @login-success="handleLoginSuccess" />
+    <!-- 安装后首次使用的一次性引导（仅全新部署且未看过时出现，不属于任何页面内容） -->
+    <OnboardingGuide v-if="!isPublicRoute" :active="loggedIn" />
     <Toast />
     <ConfirmDialog />
     <Message />
     <NotificationPanel
+      v-if="!isPublicRoute"
       :visible="showNotifications"
       @close="showNotifications = false"
       @navigate="handleNotificationNavigate"
@@ -190,9 +200,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import LoginModal from './components/LoginModal.vue'
+import OnboardingGuide from './components/OnboardingGuide.vue'
 import Toast from './components/Toast.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Message from './components/Message.vue'
@@ -204,7 +215,12 @@ import { getCurrentUser, isAuthenticated, logout } from './services/auth'
 import { setLoginCallback } from './router'
 
 const router = useRouter()
+const route = useRoute()
 const { success, info } = useToast()
+
+// 公开路由（免登录资料提交页）不渲染后台外壳：无侧边栏、无顶栏、无登录框。
+// 由路由 meta.public 标记，见 src/router/index.js 的 /submit/:token。
+const isPublicRoute = computed(() => !!route.meta.public)
 
 const showLogin = ref(false)
 const currentUsername = ref('未登录')

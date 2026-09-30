@@ -248,6 +248,91 @@ CREATE INDEX IF NOT EXISTS idx_certificates_player_id ON certificates(player_id)
 CREATE INDEX IF NOT EXISTS idx_certificates_award ON certificates(award);
 CREATE INDEX IF NOT EXISTS idx_certificates_cert_round ON certificates(cert_round);
 
+-- ========== 资料提交免登录链接表 ==========
+-- 给选手/机构生成一条带 token 的链接，对方免登录上传资料，文件直接落到归档。
+-- ⚠️ 本表刻意**不纳入** POST /api/data/save 的全量快照：
+--    1) token 必须由服务端独占签发，不能由前端构造或改写；
+--    2) 全量保存会逐表 DELETE+回填，纳入快照会被前端整体覆盖。
+-- 因此这里不进 save_all_data 的 sections 列表。
+CREATE TABLE IF NOT EXISTS submit_links (
+    token          TEXT PRIMARY KEY,   -- secrets.token_urlsafe(32)
+    entity_type    TEXT NOT NULL,      -- 'player' | 'org'
+    entity_id      TEXT NOT NULL,
+    entity_name    TEXT NOT NULL,      -- 冗余存储，便于列表展示与改名后追溯
+    stage          TEXT,               -- 选手赛段，决定要求交哪些资料
+    required_types TEXT,               -- JSON 数组：本次要求提交的资料类型名
+    expires_at     TEXT,               -- ISO 时间；为空表示不过期
+    max_uses       INTEGER DEFAULT 0,  -- 0 = 不限次（允许补交/重传）
+    used_count     INTEGER DEFAULT 0,
+    revoked        INTEGER DEFAULT 0,
+    created_by     TEXT,               -- 创建人 user_id
+    created_at     TEXT,
+    updated_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_submit_links_entity ON submit_links(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_submit_links_revoked ON submit_links(revoked);
+
+-- ========== 打印模板表（底图 + 勾选字段）==========
+-- 模板登记 = 「上传底图 + 需要替换的字段」，字段集合来自数据库表的列。
+-- 底图承载所有固定内容（花纹/Logo/主办单位），字段承载所有变化内容。
+CREATE TABLE IF NOT EXISTS print_templates (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,          -- 「2026 全国展演获奖证书」
+    doc_type      TEXT NOT NULL,          -- 'certificate' | 'roster' | 'report'
+
+    -- ---- 底图（模板主体）----
+    background    TEXT NOT NULL,          -- 底图相对路径（resources 下）
+    page_width    REAL,                   -- 底图像素宽（上传时自动读取）
+    page_height   REAL,                   -- 底图像素高（上传时自动读取）
+    page_size     TEXT,                   -- 纸张 key：A4_L / A4_P / A3_L / A3_P / CUSTOM
+
+    -- ---- 替换字段（用户从数据库表列勾选 + 定位）----
+    -- JSON: [{column, label, x, y, fontSize, align, color, fontFamily}]
+    -- x / y 为百分比（相对底图），换分辨率不会错位
+    fields        TEXT,
+
+    -- ---- 归属维度（全部可空 = 通用模板）----
+    project_id    TEXT,
+    cert_round    TEXT,
+    year          TEXT,
+
+    -- ---- 可选：设计稿源文件（便于从工作台一键打开设计软件）----
+    source_path   TEXT,
+    source_ext    TEXT,
+    source_mtime  TEXT,
+
+    note          TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_print_tpl_scope
+    ON print_templates(doc_type, project_id, cert_round, year);
+
+-- ========== 打印留痕表 ==========
+-- 由服务端在打印/归档时写入，**不纳入**全量快照（不能被前端整体覆盖）。
+CREATE TABLE IF NOT EXISTS print_logs (
+    id                TEXT PRIMARY KEY,
+    doc_type          TEXT NOT NULL,      -- 'certificate' | 'roster' | 'report'
+    title             TEXT NOT NULL,      -- 「省赛获奖证书」
+    template_id       TEXT,               -- 当时用的模板（可能已被改/被删）
+    template_snapshot TEXT,               -- 当时的模板定义快照 JSON（保证可原样重印）
+    entity_type       TEXT,               -- 'project' | 'player' | 'org'
+    entity_id         TEXT,
+    entity_name       TEXT,
+    item_count        INTEGER DEFAULT 0,  -- 本批多少份
+    ref_ids           TEXT,               -- JSON：涉及的证书编号 / 选手 id
+    snapshot_path     TEXT,               -- 归档的 HTML 相对路径
+    printed_by        TEXT,
+    printed_at        TEXT,
+    ip_address        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_print_logs_time ON print_logs(printed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_print_logs_entity ON print_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_print_logs_type ON print_logs(doc_type);
+
 -- 初始化数据版本
 INSERT OR IGNORE INTO data_version (id, version, schema_version)
 VALUES (1, '2.3', '1.0');

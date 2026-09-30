@@ -1,6 +1,6 @@
 {
   "name": "media-art-workbench",
-  "version": "2.0",
+  "version": "2.3.0",
   "description": "媒体艺术智能工作台 - 项目全生命周期管理工具",
   "type": "module",
   "scripts": {

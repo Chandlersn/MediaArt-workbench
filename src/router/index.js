@@ -15,6 +15,16 @@ const routes = [
     meta: { title: '使用指南', guest: true }
   },
   {
+    // 免登录资料提交页：选手/机构凭链接里的 token 打开。
+    // ⚠️ 已暂缓（2026-09-30）：面向多设备协作，与「个人本地使用」定位不符，
+    // 管理端入口已移除；路由保留，将来做线上时直接加回入口即可。
+    // 刻意不加 requiresAuth（守卫只拦该标记），并用 meta.public 让 App.vue 隐藏后台外壳。
+    path: '/submit/:token',
+    name: 'PublicSubmit',
+    component: () => import('../views/SubmitView.vue'),
+    meta: { title: '资料提交', public: true }
+  },
+  {
     path: '/projects',
     name: 'Projects',
     component: () => import('../views/ProjectsView.vue'),
@@ -145,6 +155,12 @@ const routes = [
     name: 'Templates',
     component: () => import('../views/TemplatesView.vue'),
     meta: { title: '模板管理', requiresAuth: true }
+  },
+  {
+    path: '/print',
+    name: 'PrintCenter',
+    component: () => import('../views/PrintCenterView.vue'),
+    meta: { title: '打印中心', requiresAuth: true }
   },
   {
     path: '/archive',

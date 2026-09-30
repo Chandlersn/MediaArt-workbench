@@ -1,51 +1,48 @@
 @echo off
 chcp 65001 >nul
-title 媒体艺术展览智能工作台
-echo.
-echo ========================================
-echo    媒体艺术展览智能工作台
-echo    正在启动...
-echo ========================================
-echo.
+title 媒体艺术智能工作台
 cd /d "%~dp0"
 
-REM 检查 Python 是否可用
+REM ============================================================
+REM  本地一键启动（个人单机使用）
+REM  真正的逻辑在 scripts\launch.py —— 这里只负责找到可用的 Python。
+REM  查找顺序：项目自带虚拟环境 > PATH 里的 python > py 启动器。
+REM ============================================================
+
+set "PY="
+
+if exist ".venv\Scripts\python.exe" (
+    set "PY=.venv\Scripts\python.exe"
+    goto :found
+)
+
 python --version >nul 2>&1
-if errorlevel 1 (
-    echo 错误: 未找到 Python，请确保已安装 Python 并添加到系统环境变量
-    echo.
-    pause
-    exit /b 1
+if not errorlevel 1 (
+    set "PY=python"
+    goto :found
 )
 
-REM 检查 Node 是否可用（前端开发服务器需要）
-node --version >nul 2>&1
-if errorlevel 1 (
-    echo 错误: 未找到 Node.js，前端需要 Node.js 环境
-    echo.
-    pause
-    exit /b 1
+py -3 --version >nul 2>&1
+if not errorlevel 1 (
+    set "PY=py -3"
+    goto :found
 )
 
-echo 正在启动后端服务 (端口 8080)...
-start "工作台后端" cmd /k "python -m server.main"
-
-echo 正在启动前端服务 (端口 3004)...
-start "工作台前端" cmd /k "npm run dev"
-
-REM 等待服务启动
-timeout /t 4 /nobreak >nul
-
-echo 正在打开浏览器...
-start "" "http://localhost:3004"
-
 echo.
-echo ========================================
-echo  后端已启动: http://localhost:8080
-echo  前端已启动: http://localhost:3004
-echo  默认账号:   admin / admin123
+echo  [x] 未找到 Python。
 echo.
-echo  关闭「工作台后端 / 工作台前端」窗口将停止对应服务
-echo ========================================
+echo      本工作台需要 Python 3.8 或更高版本。
+echo      请从 https://www.python.org/downloads/ 安装，
+echo      安装时务必勾选 "Add Python to PATH"，然后重新双击本文件。
 echo.
 pause
+exit /b 1
+
+:found
+%PY% "scripts\launch.py"
+
+REM 启动器异常退出时停住，让用户看清报错原因
+if errorlevel 1 (
+    echo.
+    pause
+)

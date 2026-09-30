@@ -116,6 +116,24 @@ class APIRouter:
         except ImportError as e:
             logger.warning(f"Archive module not available: {e}")
 
+        try:
+            from server.print.routes import PrintRouter
+            self._print_router = PrintRouter()
+            # 打印模板：底图 + 勾选字段 → 批量生成 HTML → 打印 / 归档 / 留痕
+            self.routes['/api/print'] = self._print_router
+        except ImportError as e:
+            logger.warning(f"Print module not available: {e}")
+
+        try:
+            from server.submit.routes import SubmitRouter
+            self._submit_router = SubmitRouter()
+            # 资料提交免登录链接。⚠️ 已暂缓（2026-09-30）：面向多设备协作，
+            # 与「个人本地使用」定位不符，管理端入口已移除；此处保留注册以便将来启用。
+            self.routes['/api/submit-links'] = self._submit_router
+            self.routes['/api/public/submit'] = self._submit_router
+        except ImportError as e:
+            logger.warning(f"Submit module not available: {e}")
+
     def _is_archive_route(self, path: str) -> bool:
         """Check if path matches an archive API route.
 

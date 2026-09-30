@@ -71,7 +71,11 @@
             </div>
           </form>
           <div v-if="!isChangePassword" class="login-tip">
-            <p>首次使用时，系统会自动生成管理员账号和随机密码，请查看服务端日志获取初始密码。</p>
+            <p>
+              <strong>首次使用请先创建管理员账号：</strong>
+              双击项目文件夹里的「启动工作台.bat」即可，
+              它会自动创建账号，并把用户名和密码显示在窗口里。
+            </p>
           </div>
         </div>
       </div>
@@ -333,6 +337,7 @@ const handleChangePassword = async () => {
 .login-tip p {
   margin: 0;
   color: var(--text-secondary);
+  line-height: 1.6;
 }
 
 .login-tip strong {
