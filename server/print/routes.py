@@ -665,6 +665,14 @@ class PrintRouter:
                     return a
                 return self.logs(request_context)
 
+            # 删除一条留痕（连带清理归档件）
+            if norm.startswith('/api/print/logs/') and method == 'DELETE':
+                if (a := _auth(request_context)):
+                    return a
+                if (p := _perm(request_context, 'projects', 'edit')):
+                    return p
+                return self.delete_log(norm[len('/api/print/logs/'):], request_context)
+
             if norm.startswith('/api/print/doc/') and method == 'GET':
                 if (a := _auth(request_context)):
                     return a
@@ -1016,6 +1024,45 @@ class PrintRouter:
         with open(abs_path, 'r', encoding='utf-8') as f:
             return _ok({'success': True, 'html': f.read(),
                         'title': row.get('title') or ''})
+
+    def delete_log(self, log_id: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """删除一条打印留痕，并清理它对应的归档件。
+
+        ⚠️ 与「重打」的区别：重打是新增一条留痕（保留历史），删除是不可逆地抹掉这次记录。
+        因此前端必须先确认；后端只在记录确实存在时才动手。
+
+        归档件清理失败**不阻断**删除记录 —— 记录在库、文件残留只是浪费磁盘，
+        反过来「文件删了但记录还在」才会让「查看」按钮永远报错，是更糟的状态。
+        """
+        row = data_store.db.fetchone('SELECT * FROM print_logs WHERE id = ?', (log_id,))
+        if not row:
+            return _ok({'success': False, 'message': '记录不存在'}, 404)
+
+        removed_file = False
+        rel = row.get('snapshot_path') or ''
+        if rel:
+            try:
+                abs_path = _resolve_snapshot(rel)
+                # 双保险：只删归档目录内的 HTML，绝不越界删到别处
+                root = os.path.realpath(ARCHIVES_DIR)
+                target = os.path.realpath(abs_path)
+                if os.path.isfile(target) and (target == root or target.startswith(root + os.sep)):
+                    os.remove(target)
+                    removed_file = True
+                elif os.path.isfile(target):
+                    logger.warning(f"归档件路径越界，已跳过文件删除: {target}")
+            except Exception as e:
+                logger.error(f"删除归档件失败（不阻断记录删除）: {e}")
+
+        with data_store.db.transaction() as conn:
+            conn.execute('DELETE FROM print_logs WHERE id = ?', (log_id,))
+
+        return _ok({
+            'success': True,
+            'message': '已删除',
+            'logId': log_id,
+            'removedArchive': removed_file,
+        })
 
     # ---------- 可选：打开设计稿源文件 ----------
 

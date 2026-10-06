@@ -183,6 +183,9 @@
           <button class="btn-primary" @click="$router.push(`/organizations/${org.id}/edit`)">
             编辑机构
           </button>
+          <button class="btn-secondary" @click="sedimentKnowledge">
+            沉淀为知识
+          </button>
           <button class="btn-danger" @click="confirmDelete">
             删除机构
           </button>
@@ -198,7 +201,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useOrganizationStore, usePlayerStore, useProjectStore } from '../stores'
 import { useCertificateStore } from '../stores/certificate'
 import { get, fetchWithAuth } from '../services/http.js'
-import { parseOrgIds } from '../utils/dataHelpers'
+import { parseOrgIds, knowledgeSedimentRoute } from '../utils/dataHelpers'
 import CustomSelect from '../components/CustomSelect.vue'
 import FilePreviewPanel from '../components/FilePreviewPanel.vue'
 import { useToast } from '../composables/useToast'
@@ -425,6 +428,11 @@ const confirmDelete = async () => {
     success('删除成功')
     router.push('/organizations')
   }
+}
+// 沉淀为知识：带着本机构跳进知识表单，自动预填关联与标题前缀
+const sedimentKnowledge = () => {
+  if (!org.value) return
+  router.push(knowledgeSedimentRoute('org', { id: org.value.id, name: org.value.name }))
 }
 </script>
 

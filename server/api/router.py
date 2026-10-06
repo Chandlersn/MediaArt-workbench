@@ -105,7 +105,8 @@ class APIRouter:
                       '/api/download-project-material', '/api/download-player-material',
                       '/api/get-org-material', '/api/delete-project-material',
                       '/api/delete-org-material', '/api/delete-player-material',
-                      '/api/import-players'):
+                      '/api/import-players', '/api/import-organizations',
+                      '/api/import-projects'):
                 self.routes[p] = self._materials_router
         except ImportError as e:
             logger.warning(f"Materials module not available: {e}")

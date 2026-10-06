@@ -2,9 +2,14 @@
   <div class="organizations-page">
     <div class="page-header">
       <h2>机构管理</h2>
-      <button class="btn-primary" @click="$router.push('/organizations/new')">
-        添加机构
-      </button>
+      <div class="header-buttons">
+        <button class="btn-secondary" @click="showImportModal = true">
+          批量导入
+        </button>
+        <button class="btn-primary" @click="$router.push('/organizations/new')">
+          添加机构
+        </button>
+      </div>
     </div>
 
     <div class="filter-bar">
@@ -75,6 +80,12 @@
       <button @click="batchDelete" class="danger">批量删除</button>
       <button @click="clearSelection">取消选择</button>
     </div>
+
+    <BulkImportModal
+      v-model:show="showImportModal"
+      :entity="IMPORT_ENTITY"
+      @imported="loadOrgsPaginated"
+    />
   </div>
 </template>
 
@@ -82,12 +93,22 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useOrganizationStore } from '../stores'
 import Pagination from '../components/Pagination.vue'
+import BulkImportModal from '../components/BulkImportModal.vue'
 import { get } from '../services/http.js'
 import CustomSelect from '../components/CustomSelect.vue'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 
 const orgStore = useOrganizationStore()
 const { confirm } = useConfirmDialog()
+
+const showImportModal = ref(false)
+// 批量导入配置：表头顺序即模板列顺序，导入端按表头名匹配，故顺序可被用户调整
+const IMPORT_ENTITY = {
+  label: '机构',
+  endpoint: '/api/import-organizations',
+  payloadKey: 'organizations',
+  template: '机构名称,机构类型,合作级别,联系人,联系电话,地址,备注'
+}
 
 const searchKeyword = ref('')
 const filterType = ref('all')
@@ -227,6 +248,12 @@ const batchDelete = async () => {
   font-size: 24px;
   font-weight: 600;
   color: var(--text-primary, #333);
+}
+
+.header-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .filter-bar {

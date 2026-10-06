@@ -181,6 +181,9 @@
           <button class="btn-secondary" @click="showAdvanceModal = true">
             晋级下一阶段
           </button>
+          <button class="btn-secondary" @click="sedimentKnowledge">
+            沉淀为知识
+          </button>
           <button class="btn-danger" @click="confirmDelete">
             删除选手
           </button>
@@ -247,6 +250,7 @@ import { computed, onMounted, ref, reactive, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore, useProjectStore, useOrganizationStore } from '../stores'
 import { fetchWithAuth, getBlob } from '../services/http.js'
+import { knowledgeSedimentRoute } from '../utils/dataHelpers'
 import * as dataService from '../services/dataService.js'
 import CustomSelect from '../components/CustomSelect.vue'
 import FilePreviewPanel from '../components/FilePreviewPanel.vue'
@@ -423,6 +427,12 @@ const confirmDelete = async () => {
     success('删除成功')
     router.push('/players')
   }
+}
+
+// 沉淀为知识：带着本选手跳进知识表单，自动预填关联与标题前缀
+const sedimentKnowledge = () => {
+  if (!player.value) return
+  router.push(knowledgeSedimentRoute('player', { id: player.value.id, name: player.value.name }))
 }
 
 // 资料上传相关函数

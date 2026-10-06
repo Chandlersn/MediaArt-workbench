@@ -18,14 +18,25 @@ const isEdit = computed(() => !!route.params.id)
 const formReady = ref(false)
 const fieldDefs = computed(() => KNOWLEDGE_TYPES[formData.value.type]?.fields || [])
 
+// 从业务页跳转过来时（如项目/选手/机构详情页的「沉淀为知识」），
+// query 里带着 linkType / linkId / linkName / title：
+//   - type 决定初始分类（默认排障，因为「现场沉淀」多是排障/复盘）
+//   - title 带上业务对象名作前缀，用户补一句就成标题
+//   - links 预填一条关联，避免用户再手动选一遍
+// ⚠️ 只在「新建」时生效；编辑态以库里的真实数据为准。
+const q = route.query
+const prefillLinks = (q.linkId && q.linkName)
+  ? [{ type: q.linkType || 'project', id: q.linkId, name: q.linkName }]
+  : []
+
 const formData = ref({
-  title: '',
-  type: route.query.type || 'guide',
+  title: q.title || '',
+  type: q.type || 'guide',
   description: '',
   author: '',
   tags: '',
   fields: {},
-  links: []
+  links: prefillLinks
 })
 
 const linkType = ref('project')

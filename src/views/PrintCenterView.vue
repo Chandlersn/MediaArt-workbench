@@ -15,7 +15,8 @@
 
     <div class="panel-desc intro">
       这里是打印留痕：每次批量打印的时间、份数、操作人与归档件。
-      可展开查看涉及证书、按原模板原名单一键重打；打印模板在「模板管理」维护。
+      可展开查看涉及证书、按原模板原名单一键重打，或删除不再需要的记录（连带清理归档件）；
+      打印模板在「模板管理」维护。
     </div>
 
     <div v-if="logs.length === 0" class="empty-state">
@@ -52,6 +53,11 @@
                   :disabled="!!reprinting"
                   @click="reprint(l)"
                 >{{ reprinting === l.id ? '重打中…' : '重打' }}</button>
+                <button
+                  class="btn-text danger"
+                  :disabled="!!deleting"
+                  @click="removeLog(l)"
+                >{{ deleting === l.id ? '删除中…' : '删除' }}</button>
               </td>
             </tr>
             <tr v-if="expanded === l.id">
@@ -75,7 +81,7 @@ import CustomSelect from '../components/CustomSelect.vue'
 import { useToast } from '../composables/useToast'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 import {
-  fetchPrintLogs, fetchPrintDoc, openHtmlWindow, generatePrint, archivePrint
+  fetchPrintLogs, fetchPrintDoc, openHtmlWindow, generatePrint, archivePrint, deletePrintLog
 } from '../services/print'
 import { parsePrintReferences, printReferenceKey, printReferenceNumber } from '../utils/printReferences'
 
@@ -88,6 +94,7 @@ const logs = ref([])
 const logType = ref('')
 const expanded = ref('')
 const reprinting = ref('')
+const deleting = ref('')
 
 const refIdsOf = (l) => parsePrintReferences(l.ref_ids)
 
@@ -147,6 +154,31 @@ const reprint = async (l) => {
   }
 }
 
+// 删除一条留痕：不可逆，所以要明确告诉用户「连归档件一起删」
+const removeLog = async (l) => {
+  const hasArchive = !!l.snapshot_path
+  const ok = await confirm({
+    title: '删除这条打印记录',
+    message: hasArchive
+      ? `将删除「${l.title}」（${l.printed_at}）的打印记录，并一并删除它的归档件。此操作不可恢复，确认删除吗？`
+      : `将删除「${l.title}」（${l.printed_at}）的打印记录。此操作不可恢复，确认删除吗？`,
+    confirmText: '删除', cancelText: '取消', type: 'danger'
+  })
+  if (!ok) return
+  deleting.value = l.id
+  try {
+    const res = await deletePrintLog(l.id)
+    // 展开行若正指着这条，收起，避免留下指向已删记录的残留状态
+    if (expanded.value === l.id) expanded.value = ''
+    success(res.removedArchive ? '已删除记录与归档件' : '已删除记录')
+    await loadLogs()
+  } catch (err) {
+    toastError('删除失败：' + (err.message || err))
+  } finally {
+    deleting.value = ''
+  }
+}
+
 onMounted(loadLogs)
 </script>
 
@@ -173,4 +205,5 @@ onMounted(loadLogs)
 .btn-secondary { background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
 .btn-text { background: none; border: none; color: var(--cinnabar, #b0392b); cursor: pointer; font-size: 13px; padding: 0; }
 .btn-text:disabled { opacity: 0.5; cursor: default; }
+.btn-text.danger { color: var(--danger, #d9534f); }
 </style>

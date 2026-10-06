@@ -58,6 +58,14 @@ export function fetchPrintLogs(docType = '') {
   return get(`/api/print/logs${q}`)
 }
 
+/** 删除一条打印留痕（后端会连带清理其归档件） */
+export async function deletePrintLog(logId) {
+  const res = await fetchWithAuth(`/api/print/logs/${encodeURIComponent(logId)}`, { method: 'DELETE' })
+  const data = await res.json()
+  if (!data.success) throw new Error(data.message || '删除失败')
+  return data
+}
+
 /** 字体清单：{ system: [{label, value}], uploaded: [{name, file, url}] } */
 export function fetchFonts() {
   return get('/api/print/fonts')

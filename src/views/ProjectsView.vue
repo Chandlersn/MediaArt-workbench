@@ -5,6 +5,9 @@
         <h2>项目管理</h2>
       </div>
       <div class="page-header-right">
+        <button class="btn-secondary" @click="showImportModal = true">
+          批量导入
+        </button>
         <button class="btn-primary" @click="$router.push('/projects/new')">
           新建项目
         </button>
@@ -90,6 +93,12 @@
       <button @click="batchDelete" class="danger">批量删除</button>
       <button @click="clearSelection">取消选择</button>
     </div>
+
+    <BulkImportModal
+      v-model:show="showImportModal"
+      :entity="IMPORT_ENTITY"
+      @imported="loadProjectsPaginated"
+    />
   </div>
 </template>
 
@@ -98,6 +107,7 @@ import { ref, computed, onMounted, watch, onActivated } from 'vue'
 import { useProjectStore, useOrganizationStore, usePlayerStore } from '../stores'
 import { parseOrgIds } from '../utils/dataHelpers'
 import Pagination from '../components/Pagination.vue'
+import BulkImportModal from '../components/BulkImportModal.vue'
 import { get } from '../services/http.js'
 import CustomSelect from '../components/CustomSelect.vue'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
@@ -106,6 +116,15 @@ const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 const playerStore = usePlayerStore()
 const { confirm } = useConfirmDialog()
+
+const showImportModal = ref(false)
+// 机构关联不放进导入：名称可能打错/有别名，静默匹配失败会写错关联，导入后手动挂更可靠
+const IMPORT_ENTITY = {
+  label: '项目',
+  endpoint: '/api/import-projects',
+  payloadKey: 'projects',
+  template: '项目名称,项目类型,状态,开始日期,结束日期,负责人,项目描述'
+}
 
 const searchKeyword = ref('')
 const filterStatus = ref('all')

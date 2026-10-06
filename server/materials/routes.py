@@ -175,6 +175,16 @@ class MaterialsRouter:
                     return a
                 return self.import_players(request_context)
 
+            # 机构 / 项目批量导入
+            if norm == '/api/import-organizations' and method == 'POST':
+                if (a := self._auth(request_context)):
+                    return a
+                return self.import_organizations(request_context)
+            if norm == '/api/import-projects' and method == 'POST':
+                if (a := self._auth(request_context)):
+                    return a
+                return self.import_projects(request_context)
+
             return _ok({'success': False, 'error': 'Method Not Allowed'}, 405)
         except Exception as e:
             logger.error(f"处理资料请求失败: {e}", exc_info=True)
@@ -352,6 +362,105 @@ class MaterialsRouter:
                 record['project_id'] = row['project_id']
             try:
                 data_store.players.create(record)
+                imported += 1
+            except Exception as e:
+                failed += 1
+                errors.append(f"{name}: {e}")
+        return _ok({'success': True, 'imported': imported, 'failed': failed, 'errors': errors})
+
+    def import_organizations(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """批量导入机构。
+
+        与 import_players 同构：逐行独立处理，单行失败不影响其余行，
+        最后统一返回 imported / failed / errors，让用户看到「哪几行没进来」。
+        ⚠️ 名称重复时跳过并计入 failed —— 机构名是人工识别的唯一依据，
+        静默产生两个同名机构会让后续关联选错对象。
+        """
+        body = request_context.get('body', b'')
+        payload = json.loads(body) if body else {}
+        rows = payload.get('organizations') or []
+
+        existing_names = {(o.get('name') or '').strip() for o in data_store.organizations.get_all()}
+
+        imported = 0
+        failed = 0
+        errors: List[str] = []
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                failed += 1
+                continue
+            name = (row.get('name') or row.get('机构名称') or row.get('名称') or '').strip()
+            if not name:
+                failed += 1
+                errors.append(f"第 {i + 1} 行缺少机构名称")
+                continue
+            if name in existing_names:
+                failed += 1
+                errors.append(f"{name}: 机构已存在，已跳过")
+                continue
+
+            record = {
+                'id': str(uuid.uuid4()),
+                'name': name,
+                'type': (row.get('type') or row.get('机构类型') or row.get('类型') or '').strip(),
+                'level': (row.get('level') or row.get('合作级别') or row.get('级别') or '普通合作').strip(),
+                'contact': (row.get('contact') or row.get('联系人') or '').strip(),
+                'phone': (row.get('phone') or row.get('联系电话') or row.get('电话') or '').strip(),
+                'address': (row.get('address') or row.get('地址') or '').strip(),
+                'note': (row.get('note') or row.get('备注') or '').strip(),
+            }
+            try:
+                data_store.organizations.create(record)
+                existing_names.add(name)
+                imported += 1
+            except Exception as e:
+                failed += 1
+                errors.append(f"{name}: {e}")
+        return _ok({'success': True, 'imported': imported, 'failed': failed, 'errors': errors})
+
+    def import_projects(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """批量导入项目。
+
+        机构关联（org_ids）在导入时不解析名称 —— 名称可能打错或有别名，
+        静默匹配失败会写入错误的关联。用户导入后到详情页手动挂机构更可靠。
+        """
+        body = request_context.get('body', b'')
+        payload = json.loads(body) if body else {}
+        rows = payload.get('projects') or []
+
+        existing_names = {(p.get('name') or '').strip() for p in data_store.projects.get_all()}
+
+        imported = 0
+        failed = 0
+        errors: List[str] = []
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                failed += 1
+                continue
+            name = (row.get('name') or row.get('项目名称') or row.get('名称') or '').strip()
+            if not name:
+                failed += 1
+                errors.append(f"第 {i + 1} 行缺少项目名称")
+                continue
+            if name in existing_names:
+                failed += 1
+                errors.append(f"{name}: 项目已存在，已跳过")
+                continue
+
+            record = {
+                'id': str(uuid.uuid4()),
+                'name': name,
+                'type': (row.get('type') or row.get('项目类型') or row.get('类型') or '').strip(),
+                'status': (row.get('status') or row.get('状态') or '筹备中').strip(),
+                'start_date': (row.get('start_date') or row.get('开始日期') or row.get('起始日期') or '').strip(),
+                'end_date': (row.get('end_date') or row.get('结束日期') or row.get('截止日期') or '').strip(),
+                'manager': (row.get('manager') or row.get('负责人') or '').strip(),
+                'description': (row.get('description') or row.get('项目描述') or row.get('描述') or '').strip(),
+                'org_ids': [],
+            }
+            try:
+                data_store.projects.create(record)
+                existing_names.add(name)
                 imported += 1
             except Exception as e:
                 failed += 1
