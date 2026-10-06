@@ -102,7 +102,7 @@
         <button class="btn-secondary" @click="$router.push('/projects')">
           取消
         </button>
-        <button class="btn-primary" @click="handleSave" :disabled="!formData.name">
+        <button class="btn-primary" @click="handleSave" :disabled="!formReady || projectStore.loading || !formData.name">
           {{ isEdit ? '保存修改' : '创建项目' }}
         </button>
       </div>
@@ -126,6 +126,7 @@ const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 
 const isEdit = computed(() => !!route.params.id)
+const formReady = ref(false)
 
 const formData = ref({
   name: '',
@@ -144,13 +145,15 @@ const orgOptions = computed(() =>
 )
 
 onMounted(async () => {
-  orgStore.loadOrganizations()
-  projectStore.loadProjects()
+  await Promise.all([orgStore.loadOrganizations(), projectStore.loadProjects()])
+  if (!orgStore.loaded || !projectStore.loaded) { error('表单数据加载失败，请刷新后重试'); return }
 
   if (isEdit.value) {
     const project = projectStore.getProjectById(route.params.id)
+    if (!project) { error('项目不存在，请返回列表'); return }
     if (project) {
       formData.value = {
+        id: project.id,
         name: project.name || '',
         type: project.type || '',
         status: project.status || '筹备中',
@@ -163,9 +166,11 @@ onMounted(async () => {
       }
     }
   }
+  formReady.value = true
 })
 
 const handleSave = async () => {
+  if (!formReady.value || projectStore.loading) return
   const { valid, errors } = validate({
     name: [() => required(formData.value.name, '项目名称')],
     type: [() => required(formData.value.type, '项目类型')]

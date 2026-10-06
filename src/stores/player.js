@@ -4,23 +4,80 @@ import * as dataService from '../services/dataService.js'
 import { useAuditLogStore } from './auditLog'
 import { get } from '../services/http.js'
 
+/** 扫描成功（包括空数组）以磁盘为准，失败时才使用当前阶段的历史资料。 */
+export const resolvePlayerMaterialStatus = (player, stageMaterials = {}, materialTypes = [], scanResult = null) => {
+  const requiredTypes = (stageMaterials[player.stage] || []).filter(typeName => {
+    const type = materialTypes.find(item => item.name === typeName)
+    return !type?.orgId || type.orgId === player.orgId
+  })
+  const scanned = scanResult?.success === true && Array.isArray(scanResult.materials)
+  const history = Array.isArray(player.stageHistory) ? player.stageHistory : (Array.isArray(player.history) ? player.history : [])
+  const current = history.find(item => item.stage === player.stage)
+  const fallback = Array.isArray(current?.materials)
+    ? current.materials.map(item => ({ ...item, stage: item.stage || current.stage }))
+    : (Array.isArray(player.materials) ? player.materials : [])
+  const materials = (scanned ? scanResult.materials : fallback).filter(Boolean).map(item => ({
+    ...item,
+    type: item.type || item.materialType || '',
+    name: item.file_name || item.name || '',
+    uploadDate: item.upload_date || item.uploadDate || '',
+    stage: item.stage || ''
+  }))
+  const uploadedTypes = new Set(materials
+    .filter(item => !item.stage || item.stage === player.stage)
+    .map(item => item.type))
+  const missingTypes = requiredTypes.filter(type => !uploadedTypes.has(type))
+  return { materials, requiredTypes, missingTypes, missingCount: missingTypes.length, missingMaterials: missingTypes.length > 0, scanned }
+}
+
 export const usePlayerStore = defineStore('player', () => {
   const players = ref([])
   const currentPlayer = ref(null)
   const loading = ref(false)
+  const loaded = ref(false)
+  let revision = null
   const error = ref(null)
+  let mutationQueue = Promise.resolve()
+  const mutate = operation => {
+    const result = mutationQueue.then(operation)
+    mutationQueue = result.catch(() => {})
+    return result
+  }
 
-  const loadPlayers = async () => {
+  const readPlayers = async () => {
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
       await dataService.load()
       players.value = dataService.getData('players') || []
+      invalidateMissingMaterialsCache()
+      revision = dataService.getRevision('players')
+      loaded.value = true
+      return true
     } catch (e) {
       console.error('加载选手失败:', e)
       error.value = e.message
+      return false
     } finally {
       loading.value = false
+    }
+  }
+
+  const loadPlayers = () => mutate(readPlayers)
+
+  const ensureLoaded = async () => {
+    if (!loaded.value) await readPlayers()
+    if (!loaded.value) throw new Error(error.value || '数据加载失败，无法保存，请重试')
+  }
+
+  const persist = async candidate => {
+    dataService.setData('players', candidate, revision)
+    const result = await dataService.save()
+    revision = result._revisions?.players ?? revision
+    players.value = candidate
+    if (currentPlayer.value) {
+      currentPlayer.value = players.value.find(p => p.id === currentPlayer.value.id) || null
     }
   }
 
@@ -33,26 +90,26 @@ export const usePlayerStore = defineStore('player', () => {
     currentPlayer.value = player
   }
 
-  const savePlayer = async (playerData) => {
+  const savePlayer = playerData => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const now = new Date().toISOString()
       const isNew = !playerData.id
+      const record = { ...playerData, updatedAt: now }
+      const candidate = [...players.value]
       if (isNew) {
-        playerData.id = `pl${Date.now()}`
-        playerData.createdAt = now
-        players.value.push(playerData)
+        record.id = `pl${Date.now()}`
+        record.createdAt = now
+        candidate.push(record)
       } else {
         const index = players.value.findIndex(p => p.id === playerData.id)
-        if (index !== -1) {
-          players.value[index] = { ...players.value[index], ...playerData }
-        }
+        if (index === -1) throw new Error('选手不存在，请刷新后重试')
+        candidate[index] = { ...players.value[index], ...record }
       }
-      playerData.updatedAt = now
 
-      dataService.setData('players', players.value)
-      await dataService.save()
+      await persist(candidate)
 
       invalidateMissingMaterialsCache()
 
@@ -68,7 +125,7 @@ export const usePlayerStore = defineStore('player', () => {
         console.warn('记录审计日志失败:', e)
       }
 
-      return playerData
+      return candidate.find(p => p.id === record.id)
     } catch (e) {
       console.error('保存选手失败:', e)
       error.value = e.message
@@ -76,22 +133,19 @@ export const usePlayerStore = defineStore('player', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const updatePlayer = async (id, playerData) => {
     return savePlayer({ ...playerData, id })
   }
 
-  const deletePlayer = async (id) => {
+  const deletePlayer = id => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const player = players.value.find(p => p.id === id)
-      players.value = players.value.filter(p => p.id !== id)
-      if (currentPlayer.value?.id === id) currentPlayer.value = null
-
-      dataService.setData('players', players.value)
-      await dataService.save()
+      await persist(players.value.filter(p => p.id !== id))
 
       invalidateMissingMaterialsCache()
 
@@ -113,7 +167,7 @@ export const usePlayerStore = defineStore('player', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const getPlayersByOrg = (orgId) => {
     return players.value.filter(p => p.orgId === orgId)
@@ -131,94 +185,52 @@ export const usePlayerStore = defineStore('player', () => {
   let missingMaterialsCache = null
   let missingMaterialsCacheTime = 0
 
+  const getPlayerMaterialStatus = (player, scanResult = null) => {
+    const config = dataService.getData('config') || {}
+    return resolvePlayerMaterialStatus(player, config.stageMaterials || {}, dataService.getData('materialTypes') || [], scanResult)
+  }
+
+  const applyMaterialStatus = (player, status) => {
+    player.missingMaterials = status.missingMaterials
+    player.missingCount = status.missingCount
+    player.missingTypes = status.missingTypes
+  }
+
+  const refreshPlayerMaterials = async (player) => {
+    if (!dataService.isLoaded()) await dataService.load()
+    let scanResult = null
+    try {
+      scanResult = await get(`/api/scan-player-files?name=${encodeURIComponent(player.name)}`)
+    } catch (e) {
+      console.warn('扫描选手文件失败，降级到数据检查:', player.name, e)
+    }
+    const status = getPlayerMaterialStatus(player, scanResult)
+    player.materials = status.materials
+    applyMaterialStatus(player, status)
+    invalidateMissingMaterialsCache()
+    return status
+  }
+
   const calculateMissingMaterials = async () => {
-    const now = Date.now()
-    if (missingMaterialsCache && now - missingMaterialsCacheTime < 5000) {
+    await ensureLoaded()
+    if (missingMaterialsCache && Date.now() - missingMaterialsCacheTime < 5000) {
       return missingMaterialsCache
     }
 
-    const config = dataService.getData('config') || {}
-    const stageMaterials = config.stageMaterials || {}
-    const materialTypes = dataService.getData('materialTypes') || []
     const missingPlayers = []
-
     for (const player of players.value) {
-      const currentStage = player.stage
-      const requiredTypes = stageMaterials[currentStage] || []
-
-      if (requiredTypes.length === 0) continue
-
-      const applicableTypes = requiredTypes.filter(typeName => {
-        const mt = materialTypes.find(t => t.name === typeName)
-        if (!mt) return true
-        if (!mt.orgId) return true
-        return mt.orgId === player.orgId
-      })
-
-      if (applicableTypes.length === 0) continue
-
-      let uploadedTypes = []
-      let scanSuccess = false
-
-      try {
-        const result = await get(`/api/scan-player-files?name=${encodeURIComponent(player.name)}`)
-        if (result.success && result.material_types && result.material_types.length > 0) {
-          uploadedTypes = result.material_types
-          scanSuccess = true
-        } else if (result.success && result.message && result.message.includes('不存在')) {
-          scanSuccess = false
-        } else if (result.success) {
-          scanSuccess = true
-        }
-      } catch (e) {
-        console.warn('扫描选手文件失败，降级到数据检查:', player.name, e)
-      }
-
-      if (!scanSuccess) {
-        const history = player.stageHistory || player.history || []
-        const currentStageHistory = history.find(h => h.stage === currentStage)
-        if (currentStageHistory && currentStageHistory.materials) {
-          uploadedTypes = currentStageHistory.materials.map(m => m.type)
-        } else if (player.materials && player.materials.length > 0) {
-          uploadedTypes = player.materials.map(m => m.type)
-        }
-      }
-
-      const missingTypes = applicableTypes.filter(type => !uploadedTypes.includes(type))
-
-      if (missingTypes.length > 0) {
+      let status = getPlayerMaterialStatus(player)
+      if (status.requiredTypes.length) status = await refreshPlayerMaterials(player)
+      else applyMaterialStatus(player, status)
+      if (status.missingCount) {
         missingPlayers.push({
-          id: player.id,
-          name: player.name,
-          stage: currentStage,
-          category: player.category,
-          missingCount: missingTypes.length,
-          missingTypes: missingTypes
+          id: player.id, name: player.name, stage: player.stage, category: player.category,
+          missingCount: status.missingCount, missingTypes: status.missingTypes
         })
-        player.missingMaterials = true
-        player.missingCount = missingTypes.length
-        player.missingTypes = missingTypes
-      } else {
-        player.missingMaterials = false
-        player.missingCount = 0
-        player.missingTypes = []
       }
     }
-
-    players.value.forEach(player => {
-      if (!missingPlayers.find(mp => mp.id === player.id)) {
-        player.missingMaterials = false
-        player.missingCount = 0
-        player.missingTypes = []
-      }
-    })
-
-    missingMaterialsCache = {
-      total: missingPlayers.length,
-      players: missingPlayers
-    }
-    missingMaterialsCacheTime = now
-
+    missingMaterialsCache = { total: missingPlayers.length, players: missingPlayers }
+    missingMaterialsCacheTime = Date.now()
     return missingMaterialsCache
   }
 
@@ -241,6 +253,7 @@ export const usePlayerStore = defineStore('player', () => {
     players,
     currentPlayer,
     loading,
+    loaded,
     error,
     loadPlayers,
     getPlayerById,
@@ -252,6 +265,8 @@ export const usePlayerStore = defineStore('player', () => {
     getPlayersByProject,
     getPlayerStats,
     calculateMissingMaterials,
+    getPlayerMaterialStatus,
+    refreshPlayerMaterials,
     invalidateMissingMaterialsCache,
     getMissingMaterialsCount,
     getMissingMaterialsPlayers

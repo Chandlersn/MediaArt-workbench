@@ -1,20 +1,22 @@
 <template>
-  <div class="certificates-page">
+  <div
+    class="certificates-page"
+    :class="{ 'is-dragging': isFileDragOver }"
+    @dragenter.prevent="onPageDragEnter"
+    @dragover.prevent="onPageDragOver"
+    @dragleave.prevent="onPageDragLeave"
+    @drop.prevent="onPageDrop"
+  >
+    <div v-if="isFileDragOver" class="page-drop-mask">松开鼠标即可导入台账（支持 .xlsx / .xls）</div>
     <div class="page-header">
       <h2>证书管理</h2>
       <div class="header-actions">
-        <button class="btn-secondary btn-sm" :class="{ active: showSync }" @click="showSync = !showSync">从选手同步</button>
-        <button class="btn-secondary btn-sm" :class="{ active: preview }" @click="triggerFile">导入台账</button>
-        <button class="btn-secondary btn-sm" :class="{ active: showRules }" @click="showRules = !showRules">编号规则</button>
-        <button class="btn-primary btn-sm" :disabled="selectedCount === 0" @click="openPrint">
-          批量打印{{ selectedCount ? `（${selectedCount}）` : '' }}
-        </button>
-        <button class="btn-primary btn-sm" :disabled="visibleCertificates.length === 0" @click="exportLedger(filtered, '仅导出当前筛选结果')">
-          导出当前台账
-        </button>
-        <button class="btn-primary btn-sm" :disabled="visibleCertificates.length === 0" @click="exportLedger(visibleCertificates, '导出当前会话全部证书')">
-          导出当前会话
-        </button>
+        <CertificateActions :selected="selectedCount" :filtered="filtered.length" :total="visibleCertificates.length"
+          :disabled="!!quickDraft || saving" :print-busy="openingPrint || printing"
+          @sync="showSync = !showSync" @import="triggerFile" @rules="showRules = !showRules"
+          @templates="router.push('/templates')" @history="router.push('/print')" @print="openPrint"
+          @bulk-edit="openBulkEdit" @bulk-delete="bulkDelete"
+          @export-filtered="exportLedger(filtered, '导出当前筛选结果')" @export-batch="exportLedger(visibleCertificates, '导出当前整个批次')" />
         <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display: none" @change="onFileChange" />
       </div>
     </div>
@@ -32,13 +34,14 @@
     </div>
 
     <!-- 自动关联：从已有选手/机构数据生成证书 -->
-    <div v-if="showSync" class="panel">
+    <div v-if="showSync" class="panel" :inert="!!quickDraft">
       <div class="panel-title">从选手与机构数据自动生成证书（自动关联）</div>
       <div class="panel-desc">
         选择赛事项目与赛事阶段后，系统会读取已录入的「选手」「机构」数据，为每位选手自动建立一张证书，
         自动带出姓名、选送机构、组别；赛事阶段、奖项、作品名称等可在下方明细中补填。
         证书编号按规范自动生成（省赛：【川】CNRCSOV + 年份 + 四位序号；国赛：Q + 序号）。
-        已存在的同名证书<b>只刷新身份字段</b>，你手工填写的内容不会被覆盖。
+        已关联同一选手、同一赛事阶段的证书<b>只刷新身份字段</b>，保留原批次与手工填写内容；
+        只有新增证书才建立新批次，再次同步已有选手不会产生空批次。
       </div>
       <div class="panel-actions">
         <label class="field">
@@ -62,7 +65,7 @@
     </div>
 
     <!-- 编号规则：可配置编号模板（变量化），换项目/换赛事阶段均可复用 -->
-    <div v-if="showRules" class="panel">
+    <div v-if="showRules" class="panel" :inert="!!quickDraft">
       <div class="panel-title">证书编号规则（可复用模板）</div>
       <div class="panel-desc">
         用占位变量编排编号格式，导入或同步时按模板自动生成。可用变量：
@@ -106,7 +109,7 @@
     </div>
 
     <!-- 导入预览 -->
-    <div v-if="preview" class="panel">
+    <div v-if="preview" class="panel" :inert="!!quickDraft">
       <div class="panel-head">
         <div>
           <strong>导入预览：{{ preview.fileName }}</strong>
@@ -152,22 +155,23 @@
       <div class="stat-card"><span class="num">{{ stats.missingWorkName }}</span><span class="lbl">缺作品名</span></div>
     </div>
 
-    <!-- 导入会话：每次导入/同步为一个会话，可切换、可删除（删除仅抹除该批） -->
+    <!-- 导入或同步新增证书形成批次；切换批次仅改变本标签页的查看范围 -->
     <div v-if="sessions.length > 0" class="session-bar">
-      <span class="session-label">导入会话</span>
+      <span class="session-label">证书批次</span>
       <div class="session-chips">
         <button
           v-for="s in sessions"
           :key="s.id"
           class="session-chip"
           :class="{ active: s.id === activeSessionId }"
+          :disabled="!!quickDraft"
           @click="switchSession(s.id)"
         >
           <span class="session-name">{{ s.name }}</span>
           <span class="session-count">{{ s.count }}</span>
           <span
             class="session-del"
-            :title="s.id === 'legacy-import' ? '删除将抹除全部历史导入数据' : '删除该会话（仅抹除本批）'"
+            :title="s.id === 'legacy-import' ? '删除将抹除全部历史导入数据' : '删除该批次（仅抹除本批）'"
             @click.stop="removeSession(s)"
           >×</span>
         </button>
@@ -177,29 +181,29 @@
     <!-- 来源上下文：从机构 / 项目详情页的「关联证书」跳转带入 -->
     <div v-if="ctxActive" class="ctx-bar">
       <span class="ctx-label">已限定来源：{{ ctxLabel }}</span>
-      <button class="btn-text" @click="clearContext">清除筛选</button>
+      <button class="btn-text" :disabled="!!quickDraft" @click="clearContext">清除筛选</button>
     </div>
 
     <!-- 筛选栏 -->
     <div v-if="visibleCertificates.length > 0" class="filter-bar">
-      <CustomSelect v-model="filterAward" style="width:150px">
+      <CustomSelect v-model="filterAward" :disabled="!!quickDraft" style="width:150px">
         <option value="">全部奖项</option>
         <option v-for="a in awardOptions" :key="a" :value="a">{{ a }}</option>
       </CustomSelect>
-      <CustomSelect v-model="filterRound" style="width:150px">
+      <CustomSelect v-model="filterRound" :disabled="!!quickDraft" style="width:150px">
         <option value="">全部阶段</option>
         <option v-for="r in roundOptions" :key="r" :value="r">{{ r }}</option>
       </CustomSelect>
-      <CustomSelect v-model="filterPacked" style="width:150px">
+      <CustomSelect v-model="filterPacked" :disabled="!!quickDraft" style="width:150px">
         <option value="">全部打包状态</option>
         <option value="已打包">已打包</option>
         <option value="未打包">未打包</option>
         <option value="待核对">待核对</option>
       </CustomSelect>
-      <button class="btn-secondary btn-sm" :class="{ active: ctxMissing }" @click="ctxMissing = !ctxMissing">
+      <button class="btn-secondary btn-sm" :disabled="!!quickDraft" :class="{ active: ctxMissing }" @click="ctxMissing = !ctxMissing">
         仅缺作品名
       </button>
-      <input v-model="keyword" class="form-input" placeholder="搜索姓名 / 机构 / 作品 / 证书号" style="flex:1; min-width:180px;" />
+      <input v-model="keyword" :disabled="!!quickDraft" class="form-input" placeholder="搜索姓名 / 机构 / 作品 / 证书号" style="flex:1; min-width:180px;" />
     </div>
 
     <!-- 图表 -->
@@ -215,7 +219,11 @@
     </div>
 
     <!-- 明细表 -->
-    <div v-if="filtered.length > 0" class="cert-table-wrap">
+    <div v-if="filtered.length" class="ledger-toolbar">
+      <span>当前 {{ filtered.length }} 份<span v-if="selectedCount"> · 已选 {{ selectedCount }} 份</span></span>
+      <span v-if="canEditCertificates" class="muted">{{ quickDraft ? 'Enter 保存并填写下一条 · Esc 取消当前修改' : '点击作品名称或指导老师可快速补录' }}</span>
+    </div>
+    <div v-if="filtered.length > 0" ref="quickTable" class="cert-table-wrap">
       <table class="cert-table">
         <thead>
           <tr>
@@ -226,6 +234,7 @@
             <th>奖项</th>
             <th>赛事阶段</th>
             <th>作品名称</th>
+            <th>指导老师</th>
             <th>选送机构</th>
             <th>收件机构</th>
             <th>打包</th>
@@ -233,18 +242,31 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in pagedRows" :key="c.certNumber">
+          <tr v-for="c in pagedRows" :key="certKey(c)">
             <td class="sel-col"><input type="checkbox" :checked="selectedKeys.has(certKey(c))" @change="toggleSelect(c)" /></td>
             <td class="mono">{{ c.certNumber }}</td>
             <td>{{ c.playerName }}</td>
             <td>{{ c.groupName }}</td>
             <td><span :class="['badge', awardClass(c.award)]">{{ c.award || '待填' }}</span></td>
             <td>{{ c.certRound }}</td>
-            <td :class="{ 'cell-warn': !c.workName }">{{ c.workName || '待补录' }}</td>
+            <td v-for="field in quickFields" :key="field.column" class="quick-cell" :class="{ 'cell-warn': !c[field.column] }">
+              <div v-if="isQuickEditing(c, field.column)" class="quick-editor">
+                <input v-model="quickDraft.value" class="form-input quick-input" :aria-label="`${c.playerName}的${field.label}`" :disabled="quickBusy"
+                  @keydown.enter="!$event.isComposing && saveQuickEdit(true)" @keydown.esc.prevent="cancelQuickEdit" />
+                <div class="quick-controls">
+                  <button class="btn-text" :disabled="quickBusy" @click="saveQuickEdit(false)">{{ quickBusy ? '保存中…' : '保存' }}</button>
+                  <button class="btn-text" :disabled="quickBusy" @click="cancelQuickEdit">取消</button>
+                </div>
+                <span v-if="quickError" class="quick-error" role="alert">{{ quickError }}</span>
+              </div>
+              <button v-else-if="canEditCertificates" class="quick-value" :disabled="!!quickDraft || saving"
+                :aria-label="`填写${c.playerName}的${field.label}`" @click="beginQuickEdit(c, field.column)">{{ c[field.column] || '点击补录' }} <span aria-hidden="true">✎</span></button>
+              <span v-else>{{ c[field.column] || '待补录' }}</span>
+            </td>
             <td>{{ c.orgName }}</td>
             <td>{{ c.receivingOrg || c.orgName }}</td>
             <td>
-              <CustomSelect v-model="c.packed" style="width:110px" @change="() => setPacked(c)">
+              <CustomSelect v-model="c.packed" :disabled="!!quickDraft || !canEditCertificates" style="width:110px" @change="() => setPacked(c)">
                 <option value="已打包">已打包</option>
                 <option value="未打包">未打包</option>
                 <option value="待核对">待核对</option>
@@ -257,15 +279,20 @@
                   class="print-hist"
                   :title="`最近打印：${printHist(c).last}（${printHist(c).title}）`"
                 >打印 {{ printHist(c).count }} 次</span>
-                <button class="btn-text" @click="openEdit(c)">填写</button>
+                <span
+                  v-if="legacyPrintHist(c)"
+                  class="print-hist"
+                  :title="`历史记录未保存批次；最近打印：${legacyPrintHist(c).last}（${legacyPrintHist(c).title}）`"
+                >历史 {{ legacyPrintHist(c).count }} 次（批次未记录）</span>
+                <button class="btn-text" :disabled="!canEditCertificates || saving || !!quickDraft" @click="openEdit(c)">填写</button>
                 <span class="row-sep"></span>
-                <button class="btn-text danger" @click="removeCert(c)">删除</button>
+                <button class="btn-text danger" :disabled="!!quickDraft" @click="removeCert(c)">删除</button>
               </div>
             </td>
           </tr>
         </tbody>
       </table>
-      <div class="table-foot">
+      <div class="table-foot" :inert="!!quickDraft">
         <Pagination
           :total-items="filtered.length"
           :page-size="pageSize"
@@ -280,24 +307,26 @@
       暂无证书数据。可点击右上角「导入台账」导入既有 Excel，或用「从选手同步」由系统中已录入的选手自动生成。
     </div>
     <div v-else-if="visibleCertificates.length === 0" class="empty-state">
-      当前会话暂无证书。可在上方「导入会话」中切换到其他批次，或导入新的台账 / 从选手同步。
+      当前批次暂无证书。可在上方「证书批次」中切换到其他批次，或导入新的台账 / 从选手同步。
     </div>
+    <div v-else-if="filtered.length === 0" class="empty-state">当前筛选下暂无证书，可调整筛选条件继续查看。</div>
 
     <!-- 批量打印弹窗 -->
-    <div v-if="showPrint" class="drawer-mask" @click.self="showPrint = false">
-      <div class="print-modal">
+    <div v-if="showPrint" class="drawer-mask" @click.self="closePrint">
+      <div class="print-modal" role="dialog" aria-modal="true" aria-label="批量打印证书">
         <div class="drawer-head">
-          <strong>批量打印证书（已选 {{ selectedList.length }} 份）</strong>
-          <button class="btn-text" @click="showPrint = false">关闭</button>
+          <strong>批量打印证书（已选 {{ printReferences.length }} 份）</strong>
+          <button class="btn-text" :disabled="printing || saving" @click="closePrint">关闭</button>
         </div>
-        <div class="drawer-body">
+        <div class="print-workspace">
+        <div class="drawer-body print-settings">
           <div v-if="printTemplates.length === 0" class="muted">
             还没有打印模板。请先到左侧导航「模板管理」上传底图、勾选字段创建模板。
           </div>
           <template v-else>
             <div class="drawer-row">
               <span class="drawer-label">打印模板</span>
-              <CustomSelect v-model="printTplId" style="width: 100%">
+              <CustomSelect v-model="printTplId" :disabled="printing || saving" style="width: 100%">
                 <option v-for="t in printTemplates" :key="t.id" :value="t.id">
                   {{ t.name }}（{{ (t.fields || []).length }} 个字段）
                 </option>
@@ -306,10 +335,37 @@
             <div class="drawer-row">
               <span class="drawer-label">已选证书</span>
               <div class="print-sel-list">
-                <span v-for="c in selectedList.slice(0, 20)" :key="certKey(c)" class="pill mono">{{ c.certNumber }} {{ c.playerName }}</span>
-                <span v-if="selectedList.length > 20" class="muted">…等 {{ selectedList.length }} 份</span>
+                <span v-for="c in printRecords.slice(0, 20)" :key="certKey(c)" class="pill mono">{{ c.certNumber }} {{ c.playerName }}</span>
+                <span v-if="printReferences.length > 20" class="muted">…等 {{ printReferences.length }} 份</span>
               </div>
             </div>
+            <section class="print-preflight" aria-live="polite" :aria-busy="checkingPrint">
+              <div class="print-preflight-head">
+                <strong>打印前检查</strong>
+                <button class="btn-text" :disabled="checkingPrint || printing || saving" @click="checkPrint">重新检查</button>
+              </div>
+              <p v-if="checkingPrint" class="muted">正在检查本次 {{ printReferences.length }} 份证书…</p>
+              <p v-else-if="printCheckError" class="print-check-error">检查失败：{{ printCheckError }}。请重新检查后再生成。</p>
+              <template v-else-if="printCheck">
+                <p v-if="!printIssueCount" class="print-check-ok">检查通过，未发现打印字段问题。</p>
+                <p v-else class="muted">
+                  本次发现 {{ printIssueCount }} 项问题。
+                  {{ printCheck.canGenerate ? '可去填写修正；若确认保留，可选择“仍要生成并打印”。' : '模板存在错误，请修正或更换模板后重新检查。' }}
+                </p>
+                <div v-for="(issue, index) in printCheck.issues" :key="index" class="print-issue" :class="{ 'print-issue-error': issue.severity === 'error' }">
+                  <div class="print-issue-detail">
+                    <strong>{{ issue.reference ? `${issue.reference.certNumber} ${issue.playerName || ''}` : '打印模板' }} · {{ issue.label || '版面' }}</strong>
+                    <span>{{ issue.message }}</span>
+                    <span v-if="issue.value !== null && issue.value !== undefined && String(issue.value).trim()" class="muted">当前值：{{ issue.value }}</span>
+                  </div>
+                  <button v-if="canFillPrintIssue(issue)" class="btn-secondary btn-sm" :disabled="!canEditCertificates || saving || printing || checkingPrint" @click="fillPrintIssue(issue)">去填写</button>
+                </div>
+                <p v-if="printCheck.truncated" class="muted">仅显示前 {{ printCheck.issues.length }} 项，其他问题尚未展开；修正后请重新检查。</p>
+                <p v-if="printIssueCount && !canEditCertificates" class="muted">当前账户可查看检查结果；补录需要证书修改权限。</p>
+              </template>
+              <p v-else class="muted">等待检查。</p>
+              <p v-if="printAttemptError" class="print-check-error">{{ printAttemptError }}</p>
+            </section>
             <div v-if="printWarnings.length" class="print-warn">
               <div class="side-title">部分字段取值为空，请确认：</div>
               <div v-for="w in printWarnings" :key="w.column" class="muted">
@@ -319,9 +375,13 @@
             <div class="muted">生成后自动打开打印预览窗口，请在打印对话框中选择「缩放 100%」并关闭页眉页脚。</div>
           </template>
         </div>
-        <div class="drawer-foot">
-          <button class="btn-primary" :disabled="printing || !printTplId" @click="runPrint">
-            {{ printing ? '生成中…' : '生成并打印' }}
+        <CertificatePrintPreview :template-id="printTplId" :references="printReferences" :check="printCheck" :disabled="printing || checkingPrint"
+          @ready="onPrintPreviewReady" @recheck="checkPrint" />
+        </div>
+        <div class="drawer-foot print-footer">
+          <span class="muted">本次 {{ printReferences.length }} 份 · 确认预览后生成打印件</span>
+          <button class="btn-primary" :disabled="printing || saving || checkingPrint || !printReady || printPreviewToken !== printCheck?.validationToken" @click="runPrint">
+            {{ printing ? '生成中…' : checkingPrint ? '检查中…' : printIssueCount && printCheck?.canGenerate ? '仍要生成并打印' : '生成并打印' }}
           </button>
         </div>
       </div>
@@ -329,10 +389,10 @@
 
     <!-- 填写抽屉 -->
     <div v-if="editing" class="drawer-mask" @click.self="closeEdit">
-      <div class="drawer">
+      <div ref="editDrawer" class="drawer">
         <div class="drawer-head">
           <strong>填写证书信息</strong>
-          <button class="btn-text" @click="closeEdit">收起</button>
+          <button class="btn-text" :disabled="saving" :title="editFromPrint ? '取消补录并返回打印检查' : '收起填写窗口'" @click="closeEdit">收起</button>
         </div>
         <div class="drawer-body">
           <div class="drawer-row">
@@ -341,52 +401,52 @@
           </div>
           <div class="drawer-row">
             <span class="drawer-label">选手姓名</span>
-            <input v-model="editing.playerName" class="form-input" />
+            <input v-model="editing.playerName" data-cert-field="playerName" aria-label="选手姓名" :disabled="saving || !canEditCertificates" class="form-input" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">赛事阶段</span>
-            <CustomSelect v-model="editing.certRound" style="width:100%">
+            <CustomSelect v-model="editing.certRound" data-cert-field="certRound" aria-label="赛事阶段" :disabled="saving || !canEditCertificates" style="width:100%">
               <option v-for="r in roundOptionsAll" :key="r" :value="r">{{ r }}</option>
             </CustomSelect>
           </div>
           <div class="drawer-row">
             <span class="drawer-label">组别</span>
-            <input v-model="editing.groupName" class="form-input" />
+            <input v-model="editing.groupName" data-cert-field="groupName" aria-label="组别" :disabled="saving || !canEditCertificates" class="form-input" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">奖项</span>
-            <CustomSelect v-model="editing.award" style="width:100%">
+            <CustomSelect v-model="editing.award" data-cert-field="award" aria-label="奖项" :disabled="saving || !canEditCertificates" style="width:100%">
               <option value="">（待定）</option>
               <option v-for="a in awardOptionsAll" :key="a" :value="a">{{ a }}</option>
             </CustomSelect>
           </div>
           <div class="drawer-row">
             <span class="drawer-label">作品名称</span>
-            <input v-model="editing.workName" class="form-input" placeholder="必填，用于证书印制" />
+            <input v-model="editing.workName" data-cert-field="workName" aria-label="作品名称" :disabled="saving || !canEditCertificates" class="form-input" placeholder="必填，用于证书印制" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">指导老师</span>
-            <input v-model="editing.instructor" class="form-input" />
+            <input v-model="editing.instructor" data-cert-field="instructor" aria-label="指导老师" :disabled="saving || !canEditCertificates" class="form-input" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">语种</span>
-            <input v-model="editing.language" class="form-input" />
+            <input v-model="editing.language" data-cert-field="language" aria-label="语种" :disabled="saving || !canEditCertificates" class="form-input" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">晋级情况</span>
-            <input v-model="editing.promotion" class="form-input" />
+            <input v-model="editing.promotion" data-cert-field="promotion" aria-label="晋级情况" :disabled="saving || !canEditCertificates" class="form-input" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">选送机构（校区）</span>
-            <input v-model="editing.orgName" class="form-input" />
+            <input v-model="editing.orgName" data-cert-field="orgName" aria-label="选送机构（校区）" :disabled="saving || !canEditCertificates" class="form-input" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">收件机构</span>
-            <input v-model="editing.receivingOrg" class="form-input" placeholder="决定导出时分到哪张表" />
+            <input v-model="editing.receivingOrg" data-cert-field="receivingOrg" aria-label="收件机构" :disabled="saving || !canEditCertificates" class="form-input" placeholder="决定导出时分到哪张表" />
           </div>
           <div class="drawer-row">
             <span class="drawer-label">打包状态</span>
-            <CustomSelect v-model="editing.packed" style="width:100%">
+            <CustomSelect v-model="editing.packed" data-cert-field="packed" aria-label="打包状态" :disabled="saving || !canEditCertificates" style="width:100%">
               <option value="已打包">已打包</option>
               <option value="未打包">未打包</option>
               <option value="待核对">待核对</option>
@@ -394,10 +454,44 @@
           </div>
         </div>
         <div class="drawer-foot">
-          <button class="btn-primary" :disabled="saving" @click="saveEdit">
+          <button class="btn-primary" :disabled="saving || !canEditCertificates" @click="saveEdit">
             {{ saving ? '保存中…' : '保存' }}
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- 批量修改弹窗：把同一个值写入所有勾选的证书 -->
+    <div v-if="showBulkEdit" class="bulk-mask" @click.self="showBulkEdit = false">
+      <div class="bulk-dialog" role="dialog" aria-modal="true" aria-label="批量修改证书">
+        <header class="bulk-head">
+          <strong>批量修改证书（已选 {{ selectedCount }} 份）</strong>
+          <button class="bulk-x" aria-label="关闭" @click="showBulkEdit = false">×</button>
+        </header>
+        <div class="bulk-body">
+          <div class="bulk-row">
+            <span class="drawer-label">字段</span>
+            <CustomSelect v-model="bulkEditField" style="width: 160px">
+              <option v-for="f in BULK_EDITABLE_FIELDS" :key="f.key" :value="f.key">{{ f.label }}</option>
+            </CustomSelect>
+          </div>
+          <div class="bulk-row">
+            <span class="drawer-label">新值</span>
+            <input
+              v-model="bulkEditValue"
+              class="bulk-input"
+              :placeholder="`新的${bulkEditFieldLabel}（留空表示清空该字段）`"
+              @keyup.enter="applyBulkEdit"
+            />
+          </div>
+          <p class="bulk-hint">只影响当前批次里勾中的 {{ selectedCount }} 份，未勾选的不动。</p>
+        </div>
+        <footer class="bulk-foot">
+          <button class="btn-secondary" @click="showBulkEdit = false">取消</button>
+          <button class="btn-primary" :disabled="bulkEditBusy" @click="applyBulkEdit">
+            {{ bulkEditBusy ? '应用中…' : `应用到 ${selectedCount} 份` }}
+          </button>
+        </footer>
       </div>
     </div>
   </div>
@@ -405,16 +499,22 @@
 
 <script setup>
 import { ref, computed, onMounted, onActivated, watch, nextTick } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { useToast } from '../composables/useToast'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 import { useCertificateStore } from '../stores/certificate'
 import { useProjectStore } from '../stores/project'
 import { useOrganizationStore } from '../stores/organization'
 import { usePlayerStore } from '../stores/player'
+import { useUserStore } from '../stores/user'
+import { useCertificatePrintPreflight } from '../composables/useCertificatePrintPreflight'
+import { useCertificateQuickEdit } from '../composables/useCertificateQuickEdit'
+import CertificateActions from '../components/CertificateActions.vue'
+import CertificatePrintPreview from '../components/CertificatePrintPreview.vue'
 import { parseCertificateFile } from '../services/certificateImport'
 import { exportCertificateLedger, ROUND_ORDER } from '../services/certificateExport'
-import { generatePrint, archivePrint, openHtmlWindow, fetchPrintLogs, fetchFieldCatalog } from '../services/print'
+import { validatePrint, generatePrint, archivePrint, openHtmlWindow, fetchPrintLogs, fetchFieldCatalog } from '../services/print'
+import { indexPrintReferences, printReferenceKey } from '../utils/printReferences'
 import * as dataService from '../services/dataService'
 import CustomSelect from '../components/CustomSelect.vue'
 import Pagination from '../components/Pagination.vue'
@@ -426,6 +526,8 @@ const certStore = useCertificateStore()
 const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 const playerStore = usePlayerStore()
+const userStore = useUserStore()
+const canEditCertificates = computed(() => userStore.can('projects', 'edit'))
 
 const certificates = computed(() => certStore.certificates)
 const visibleCertificates = computed(() => certStore.visibleCertificates)
@@ -575,6 +677,46 @@ const onPageSizeChange = (size) => {
   currentPage.value = 1
 }
 
+const quickFields = [{ column: 'workName', label: '作品名称' }, { column: 'instructor', label: '指导老师' }]
+const quickTable = ref(null)
+const { draft: quickDraft, busy: quickBusy, error: quickError, begin: beginQuick, cancel: cancelQuickEdit, save: commitQuickEdit } = useCertificateQuickEdit({
+  canEdit: () => canEditCertificates.value,
+  records: () => certificates.value,
+  update: (...args) => certStore.updateCert(...args)
+})
+const isQuickEditing = (record, column) => quickDraft.value?.column === column && certKey(quickDraft.value) === certKey(record)
+const focusQuickEdit = async () => {
+  if (!quickDraft.value) return
+  const index = filtered.value.findIndex(record => certKey(record) === certKey(quickDraft.value))
+  if (index >= 0) currentPage.value = Math.floor(index / pageSize.value) + 1
+  await nextTick()
+  const input = quickTable.value?.querySelector('.quick-input')
+  input?.focus()
+  input?.select()
+}
+const beginQuickEdit = async (record, column) => {
+  if (beginQuick(record, column, filtered.value)) await focusQuickEdit()
+}
+const saveQuickEdit = async advance => {
+  if (await commitQuickEdit(advance)) {
+    if (quickDraft.value) await focusQuickEdit()
+    else success('已保存')
+  }
+}
+const leaveQuickEdit = async () => {
+  if (quickBusy.value) { warning('正在保存，请稍候再离开'); return false }
+  if (!quickDraft.value) return true
+  if (quickDraft.value.value !== quickDraft.value.original) {
+    const discard = await confirm({ title: '补录内容尚未保存', message: '离开会丢弃当前输入，已保存的内容不受影响。',
+      confirmText: '放弃并离开', cancelText: '继续填写', type: 'default' })
+    if (!discard) return false
+  }
+  cancelQuickEdit()
+  return true
+}
+onBeforeRouteLeave(leaveQuickEdit)
+onBeforeRouteUpdate(leaveQuickEdit)
+
 watch([filtered], () => { if (currentPage.value > Math.max(1, Math.ceil(filtered.value.length / pageSize.value))) currentPage.value = 1 })
 
 const awardClass = (award) => {
@@ -588,8 +730,8 @@ const awardClass = (award) => {
 const triggerFile = () => fileInput.value?.click()
 const cancelImport = () => { preview.value = null; if (fileInput.value) fileInput.value.value = '' }
 
-const onFileChange = async (e) => {
-  const file = e.target.files && e.target.files[0]
+/** 解析并预览导入文件（点击选择与拖拽导入共用同一逻辑） */
+const importFile = async (file) => {
   if (!file) return
   try {
     const { preview: p, rows, meta } = await parseCertificateFile(file)
@@ -597,6 +739,45 @@ const onFileChange = async (e) => {
   } catch (err) {
     toastError('解析文件失败：' + (err.message || err))
   }
+}
+
+const onFileChange = (e) => importFile(e.target.files && e.target.files[0])
+
+// ---- 拖拽导入：把 Excel 拖到页面任意处即可导入台账 ----
+// 台账是本页的主体操作，用户从资源管理器直接拖文件进来最省事。
+const isFileDragOver = ref(false)
+let dragDepth = 0
+
+const isExcelFile = (name) => /\.(xlsx|xls)$/i.test(name || '')
+
+const onPageDragEnter = (e) => {
+  if (!e.dataTransfer?.types?.includes('Files')) return
+  dragDepth += 1
+  isFileDragOver.value = true
+}
+
+const onPageDragOver = (e) => {
+  if (e.dataTransfer?.types?.includes('Files')) isFileDragOver.value = true
+}
+
+const onPageDragLeave = () => {
+  dragDepth -= 1
+  if (dragDepth <= 0) {
+    dragDepth = 0
+    isFileDragOver.value = false
+  }
+}
+
+const onPageDrop = (e) => {
+  dragDepth = 0
+  isFileDragOver.value = false
+  const file = e.dataTransfer?.files?.[0]
+  if (!file) return
+  if (!isExcelFile(file.name)) {
+    toastError('只支持 Excel 文件（.xlsx / .xls）')
+    return
+  }
+  importFile(file)
 }
 
 const matchOrgId = (orgName) => {
@@ -621,8 +802,8 @@ const confirmImport = async () => {
       playerId: matchPlayerId(r.playerName, r.orgName),
       importId: preview.value._meta?.parsedAt || new Date().toISOString()
     }))
-    await certStore.importCertificates(rows, { fileName: preview.value.fileName, projectId: importProjectId.value })
-    success(`已导入 ${rows.length} 条证书`)
+    const count = await certStore.importCertificates(rows, { fileName: preview.value.fileName, projectId: importProjectId.value })
+    success(`已导入 ${count} 条证书`)
     preview.value = null
     if (fileInput.value) fileInput.value.value = ''
   } catch (err) {
@@ -645,7 +826,8 @@ const runSync = async () => {
       certRound: syncRound.value,
       assignNumbers: true
     })
-    success(`同步完成：新增 ${res.created} 条，更新 ${res.updated} 条`)
+    if (!res.created && !res.updated) warning('所选项目没有可同步的选手，证书数据未变更')
+    else success(`同步完成：新增 ${res.created} 条，更新 ${res.updated} 条${res.created ? '；新增证书位于新批次，已有证书保留原批次' : '；已显示更新所在批次'}`)
     showSync.value = false
   } catch (err) {
     toastError('同步失败：' + (err.message || err))
@@ -683,7 +865,7 @@ const setPacked = async (c) => {
 }
 
 // ===== 勾选 + 批量打印 =====
-const certKey = (c) => `${c.certNumber}|${c.sessionId || ''}`
+const certKey = (c) => printReferenceKey({ certNumber: c.certNumber, sessionId: c.sessionId || '' })
 const selectedKeys = ref(new Set())
 const toggleSelect = (c) => {
   const next = new Set(selectedKeys.value)
@@ -706,58 +888,91 @@ const showPrint = ref(false)
 const printTemplates = ref([])
 const printTplId = ref('')
 const printing = ref(false)
+const openingPrint = ref(false)
 const printWarnings = ref([])
+const printAttemptError = ref('')
+const printPreviewToken = ref('')
+const onPrintPreviewReady = token => { printPreviewToken.value = token }
+const printRecords = ref([])
+const {
+  references: printReferences, checking: checkingPrint, result: printCheck,
+  error: printCheckError, checkedTemplateId, begin: beginPrintCheck,
+  invalidate: invalidatePrintCheck, check: checkPrintTemplate
+} = useCertificatePrintPreflight(validatePrint)
+const printReady = computed(() => Boolean(printCheck.value?.canGenerate &&
+  checkedTemplateId.value === printTplId.value && !printCheckError.value && !checkingPrint.value))
+const printIssueCount = computed(() => printCheck.value?.issueCount || 0)
+const checkPrint = () => checkPrintTemplate(printTplId.value)
+const closePrint = () => {
+  if (printing.value || saving.value) return
+  showPrint.value = false
+  invalidatePrintCheck()
+  printPreviewToken.value = ''
+}
+watch(printTplId, () => {
+  printAttemptError.value = ''
+  if (showPrint.value) checkPrint()
+}, { flush: 'sync' })
 
 const openPrint = async () => {
+  if (openingPrint.value || printing.value) return
+  if (!selectedList.value.length) { warning('请先勾选要打印的证书'); return }
+  // 打开即固定身份；补录、筛选及当前批次变化均不改变本次范围。
+  printRecords.value = selectedList.value.map(c => ({ ...c }))
+  beginPrintCheck(printRecords.value)
   printWarnings.value = []
-  await dataService.load()
-  printTemplates.value = (dataService.getData('printTemplates') || [])
-    .filter(t => (t.docType || 'certificate') === 'certificate')
-  if (!printTemplates.value.length) {
-    warning('还没有证书打印模板，请先到「模板管理」创建')
-    router.push('/templates')
-    return
+  printAttemptError.value = ''
+  printPreviewToken.value = ''
+  openingPrint.value = true
+  try {
+    await Promise.all([dataService.load(), userStore.loadPermissions()])
+    printTemplates.value = (dataService.getData('printTemplates') || [])
+      .filter(t => (t.docType || 'certificate') === 'certificate')
+    if (!printTemplates.value.length) {
+      warning('还没有证书打印模板，请先到「模板管理」创建')
+      router.push('/templates')
+      return
+    }
+    printTplId.value = printTemplates.value[0]?.id || ''
+    showPrint.value = true
+    await checkPrint()
+  } catch (err) {
+    toastError('读取打印模板失败：' + (err.message || err))
+  } finally {
+    openingPrint.value = false
   }
-  printTplId.value = printTemplates.value[0]?.id || ''
-  showPrint.value = true
 }
 
+const issueSignature = result => JSON.stringify({
+  count: result?.issueCount || 0, truncated: Boolean(result?.truncated),
+  issues: result?.issues || []
+})
+
 const runPrint = async () => {
+  if (printing.value || saving.value || checkingPrint.value || !printReady.value) return
   const tpl = printTemplates.value.find(t => t.id === printTplId.value)
   if (!tpl) { warning('请选择打印模板'); return }
-  if (!selectedList.value.length) { warning('请先勾选要打印的证书'); return }
-
-  // 打印前校验：勾选字段在所选证书里存在未填写值 → 弹窗提醒，默认中断。
-  // 字段列名兼容三种存法：数据记录键（驼峰）、dbColumn、历史模板的下划线列名。
-  const snakeToCamel = (s) => String(s).replace(/_([a-z])/g, (_, ch) => ch.toUpperCase())
-  const missing = []
-  for (const f of (tpl.fields || [])) {
-    if (!f.column) continue
-    const n = selectedList.value.filter(c => {
-      const v = c[f.column] ?? c[f.dbColumn] ?? c[snakeToCamel(f.column)]
-      return v === null || v === undefined || String(v).trim() === ''
-    }).length
-    if (n) missing.push({ label: f.label || f.column, count: n })
-  }
-  if (missing.length) {
-    const detail = missing.map(m => `「${m.label}」${m.count} 份未填写`).join('，')
-    const go = await confirm({
-      title: '存在未填写的打印字段',
-      message: `本次所选证书中，${detail}。空白位置将直接留空打印。`,
-      confirmText: '仍要打印',
-      cancelText: '中断打印',
-      type: 'warning'
-    })
-    if (!go) return // 中断，不生成、不归档
-  }
-
+  const acknowledgedIssues = issueSignature(printCheck.value)
+  const viewedToken = printPreviewToken.value
+  const references = printReferences.value.map(reference => ({ ...reference }))
   printing.value = true
   printWarnings.value = []
+  printAttemptError.value = ''
   try {
+    const checked = await checkPrintTemplate(tpl.id)
+    if (!checked || !checked.canGenerate) return
+    if (viewedToken && checked.validationToken !== viewedToken) {
+      warning('证书或模板已更新，请查看新的预览后再打印')
+      return
+    }
+    if (checked.issueCount && issueSignature(checked) !== acknowledgedIssues) {
+      warning('检查结果已更新，请确认列出的问题后再生成')
+      return
+    }
     const res = await generatePrint({
       templateId: tpl.id,
-      certNumbers: selectedList.value.map(c => ({ certNumber: c.certNumber, sessionId: c.sessionId || '' })),
-      sessionId: ''
+      certNumbers: references,
+      validationToken: checked.validationToken
     })
     if (!res.success) throw new Error(res.message || '生成失败')
     printWarnings.value = res.warnings || []
@@ -770,7 +985,7 @@ const runPrint = async () => {
         docType: tpl.docType || 'certificate',
         title: tpl.name,
         itemCount: res.itemCount,
-        refIds: selectedList.value.map(c => c.certNumber)
+        refIds: references
       })
     } catch (e) { console.warn('打印留痕失败（不阻断）:', e) }
     success(`已生成 ${res.itemCount} 份证书，请在打印窗口确认后打印`)
@@ -778,7 +993,9 @@ const runPrint = async () => {
     showPrint.value = false
     selectedKeys.value = new Set()
   } catch (err) {
+    printAttemptError.value = err.message || '生成失败'
     toastError('批量打印失败：' + (err.message || err))
+    if (err.status === 409) await checkPrintTemplate(tpl.id)
   } finally {
     printing.value = false
   }
@@ -787,7 +1004,7 @@ const runPrint = async () => {
 const removeCert = async (c) => {
   const ok = await confirm({
     title: '删除证书',
-    message: `确定删除证书「${c.certNumber}」（选手：${c.playerName || '—'}）吗？该操作仅影响当前会话下的这一条。`,
+    message: `确定删除证书「${c.certNumber}」（选手：${c.playerName || '—'}）吗？该操作仅影响当前批次下的这一条。`,
     confirmText: '删除',
     cancelText: '取消',
     type: 'danger'
@@ -801,23 +1018,95 @@ const removeCert = async (c) => {
   }
 }
 
-// 切换导入会话（仅改变可视范围）
-const switchSession = async (id) => {
+// ===== 批量操作（删除 / 修改字段）=====
+// 复用与批量打印同一套勾选（selectedKeys）。勾选只在当前批次内有效，
+// 所以这两个操作的作用范围也是「当前批次里勾中的那些」。
+
+/** 可批量修改的字段（与证书表单口径一致） */
+const BULK_EDITABLE_FIELDS = [
+  { key: 'award', label: '奖项' },
+  { key: 'certRound', label: '赛段' },
+  { key: 'groupName', label: '组别' },
+  { key: 'language', label: '语种' },
+  { key: 'instructor', label: '指导老师' },
+  { key: 'orgName', label: '选送机构' },
+  { key: 'receivingOrg', label: '收件机构' },
+  { key: 'promotion', label: '晋级情况' },
+  { key: 'workName', label: '作品名称' },
+]
+
+const showBulkEdit = ref(false)
+const bulkEditField = ref('award')
+const bulkEditValue = ref('')
+const bulkEditBusy = ref(false)
+
+const bulkEditFieldLabel = computed(() =>
+  (BULK_EDITABLE_FIELDS.find(f => f.key === bulkEditField.value) || {}).label || '')
+
+const openBulkEdit = () => {
+  if (!selectedList.value.length) return
+  bulkEditField.value = BULK_EDITABLE_FIELDS[0].key
+  bulkEditValue.value = ''
+  showBulkEdit.value = true
+}
+
+const applyBulkEdit = async () => {
+  const list = selectedList.value
+  if (!list.length || bulkEditBusy.value) return
+  const patch = { [bulkEditField.value]: bulkEditValue.value }
+  bulkEditBusy.value = true
   try {
-    await certStore.switchSession(id)
+    const n = await certStore.patchCerts(
+      list.map(c => ({ certNumber: c.certNumber, sessionId: c.sessionId || '' })), patch)
+    success(`已把 ${n} 份证书的「${bulkEditFieldLabel.value}」改为「${bulkEditValue.value || '（空）'}」`)
+    showBulkEdit.value = false
   } catch (err) {
-    toastError('切换会话失败：' + (err.message || err))
+    toastError('批量修改失败：' + (err.message || err))
+  } finally {
+    bulkEditBusy.value = false
   }
 }
 
-// 删除导入会话：仅抹除该会话下的证书
+const bulkDelete = async () => {
+  const list = selectedList.value
+  if (!list.length) return
+  const ok = await confirm({
+    title: '批量删除证书',
+    message: `确定删除选中的 ${list.length} 份证书吗？此操作不可撤销，建议先到「设置 → 备份管理」创建一份备份。`,
+    confirmText: `删除 ${list.length} 份`,
+    cancelText: '取消',
+    type: 'danger'
+  })
+  if (!ok) return
+  try {
+    const n = await certStore.deleteCerts(
+      list.map(c => ({ certNumber: c.certNumber, sessionId: c.sessionId || '' })))
+    selectedKeys.value = new Set()
+    success(`已删除 ${n} 份证书`)
+  } catch (err) {
+    toastError('批量删除失败：' + (err.message || err))
+  }
+}
+
+// 切换证书批次（仅改变可视范围）
+const switchSession = async (id) => {
+  if (quickDraft.value) return
+  try {
+    await certStore.switchSession(id)
+  } catch (err) {
+    toastError('切换批次失败：' + (err.message || err))
+  }
+}
+
+// 删除证书批次：仅抹除该批次下的证书
 const removeSession = async (s) => {
+  if (quickDraft.value) return
   const isLegacy = s.id === 'legacy-import'
   const ok = await confirm({
-    title: isLegacy ? '删除历史导入会话' : '删除导入会话',
+    title: isLegacy ? '删除历史导入批次' : '删除证书批次',
     message: isLegacy
       ? `「历史导入」包含 ${s.count} 条证书，删除后将彻底抹除且不可恢复。确定继续吗？`
-      : `确定删除会话「${s.name}」吗？将抹除该会话下的 ${s.count} 条证书，其它会话不受影响。`,
+      : `确定删除批次「${s.name}」吗？将抹除该批次下的 ${s.count} 条证书，其它批次不受影响。`,
     confirmText: '删除',
     cancelText: '取消',
     type: 'danger'
@@ -825,9 +1114,9 @@ const removeSession = async (s) => {
   if (!ok) return
   try {
     const removed = await certStore.deleteSession(s.id)
-    success(`已删除会话，抹除 ${removed} 条证书`)
+    success(`已删除批次，抹除 ${removed} 条证书`)
   } catch (err) {
-    toastError('删除会话失败：' + (err.message || err))
+    toastError('删除批次失败：' + (err.message || err))
   }
 }
 
@@ -858,24 +1147,70 @@ const syncRulesFromStore = () => {
 
 // 填写抽屉
 const editing = ref(null)
-const openEdit = (c) => { editing.value = { ...c } }
-const closeEdit = () => { editing.value = null }
+const editDrawer = ref(null)
+const editFromPrint = ref(false)
+const editableCertFields = new Set(['playerName', 'certRound', 'groupName', 'award', 'workName', 'instructor', 'language', 'promotion', 'orgName', 'receivingOrg', 'packed'])
+const canFillPrintIssue = issue => Boolean(issue.reference && editableCertFields.has(issue.column))
+const openEdit = (c) => {
+  if (saving.value || printing.value) return
+  if (!canEditCertificates.value) { warning('当前账户没有修改证书的权限'); return }
+  editFromPrint.value = false
+  editing.value = { ...c }
+}
+const fillPrintIssue = async issue => {
+  if (saving.value || printing.value || checkingPrint.value || !canFillPrintIssue(issue)) return
+  if (!canEditCertificates.value) { warning('当前账户没有修改证书的权限'); return }
+  const reference = issue.reference
+  const record = certificates.value.find(c => String(c.certNumber) === String(reference.certNumber) &&
+    (c.sessionId || 'legacy-import') === (reference.sessionId || 'legacy-import'))
+  if (!record) { toastError('这份证书已不存在，请重新检查'); await checkPrint(); return }
+  editFromPrint.value = true
+  editing.value = { ...record }
+  showPrint.value = false
+  invalidatePrintCheck()
+  await nextTick()
+  const control = editDrawer.value?.querySelector(`[data-cert-field="${issue.column}"]`)
+  const target = control?.matches('input,textarea') ? control : control?.querySelector('.custom-select-trigger')
+  if (target) {
+    if (!target.matches('input,textarea')) target.setAttribute('tabindex', '-1')
+    target.focus()
+    target.scrollIntoView?.({ block: 'nearest' })
+  }
+}
+const closeEdit = async () => {
+  if (saving.value) return
+  editing.value = null
+  if (editFromPrint.value) {
+    editFromPrint.value = false
+    showPrint.value = true
+    await checkPrint()
+  }
+}
 const saveEdit = async () => {
-  if (!editing.value) return
+  if (!editing.value || saving.value || !canEditCertificates.value) return
   saving.value = true
+  let returnToPrint = false
   try {
     const patch = { ...editing.value }
     delete patch.certNumber
     patch.missingWorkName = patch.workName ? 0 : 1
     patch.isWithdrawn = (patch.award || '').includes('退赛') ? 1 : 0
     patch.receivingOrg = patch.receivingOrg || patch.orgName
-    await certStore.updateCert(editing.value.certNumber, patch, editing.value.sessionId)
+    const saved = await certStore.updateCert(editing.value.certNumber, patch, editing.value.sessionId)
+    if (saved === null) throw new Error('证书已不存在，未保存修改')
+    printRecords.value = printRecords.value.map(c => certKey(c) === certKey(editing.value) ? { ...editing.value } : c)
     success('已保存')
     editing.value = null
+    returnToPrint = editFromPrint.value
+    editFromPrint.value = false
   } catch (err) {
     toastError('保存失败：' + (err.message || err))
   } finally {
     saving.value = false
+  }
+  if (returnToPrint) {
+    showPrint.value = true
+    await checkPrint()
   }
 }
 
@@ -933,29 +1268,25 @@ const incompleteFields = computed(() => {
 const loadPrintIndex = async () => {
   try {
     const res = await fetchPrintLogs('certificate')
-    const map = {}
-    for (const l of ((res.success && res.logs) || [])) {
-      let ids = []
-      try { ids = typeof l.ref_ids === 'string' ? JSON.parse(l.ref_ids) : (l.ref_ids || []) } catch { ids = [] }
-      for (const n of ids) {
-        const e = map[n] || (map[n] = { count: 0, last: '', title: '' })
-        e.count += 1
-        if (String(l.printed_at || '') > e.last) { e.last = l.printed_at; e.title = l.title }
-      }
-    }
-    printLogIndex.value = map
+    printLogIndex.value = indexPrintReferences((res.success && res.logs) || [])
   } catch { /* 打印历史失败不阻断页面 */ }
 }
 
-const printHist = (c) => printLogIndex.value[c.certNumber]
+const printHist = (c) => printLogIndex.value[printReferenceKey({ certNumber: c.certNumber, sessionId: c.sessionId || '' })]
+const legacyPrintHist = (c) => printLogIndex.value[printReferenceKey(c.certNumber)]
 
 onMounted(async () => {
   await Promise.all([
     certStore.loadCertificates(),
+    userStore.loadPermissions(),
     projectStore.loadProjects?.(),
     orgStore.loadOrganizations?.(),
     playerStore.loadPlayers?.()
   ].filter(Boolean))
+  if (!certStore.loaded || !projectStore.loaded || !orgStore.loaded || !playerStore.loaded) {
+    toastError('证书数据加载失败，请刷新后重试')
+    return
+  }
   syncRulesFromStore()
   applyRouteQuery()
   await Promise.all([loadFieldCatalog(), loadPrintIndex()])
@@ -966,10 +1297,15 @@ onMounted(async () => {
 onActivated(async () => {
   await certStore.loadCertificates()
   await Promise.all([
+    userStore.loadPermissions(),
     projectStore.loadProjects?.(),
     orgStore.loadOrganizations?.(),
     playerStore.loadPlayers?.()
   ].filter(Boolean))
+  if (!certStore.loaded || !projectStore.loaded || !orgStore.loaded || !playerStore.loaded) {
+    toastError('证书数据加载失败，请刷新后重试')
+    return
+  }
   syncRulesFromStore()
   applyRouteQuery()
   await Promise.all([loadFieldCatalog(), loadPrintIndex()])
@@ -983,6 +1319,22 @@ watch(() => route.query, () => applyRouteQuery())
 
 <style scoped>
 .certificates-page { padding: 24px; }
+
+/* 拖拽导入遮罩：把 Excel 拖到页面任意处即可导入台账 */
+.page-drop-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(59, 130, 246, 0.08);
+  border: 3px dashed var(--accent, #3b82f6);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent, #3b82f6);
+  pointer-events: none;
+}
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
 .page-header h2 { margin: 0; font-size: 20px; color: var(--text-primary); }
 .header-actions { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -1030,6 +1382,16 @@ watch(() => route.query, () => applyRouteQuery())
 .a-copper { background: #e8eef0; color: #4a6b78; }
 .a-other { background: var(--bg-primary); color: var(--text-secondary); }
 .table-foot { margin-top: 12px; }
+.ledger-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; color: var(--text-primary); }
+.quick-cell { min-width: 140px; max-width: 260px; }
+.quick-value { display: flex; align-items: center; gap: 8px; text-align: left; font: inherit; color: inherit; border: 1px solid transparent; background: transparent; cursor: text; padding: 5px; border-radius: 5px; overflow-wrap: anywhere; }
+.quick-value span { opacity: .35; }
+.quick-value:hover, .quick-value:focus-visible { border-color: var(--border); background: var(--bg-primary); }
+.quick-value:disabled { cursor: default; }
+.quick-editor { display: flex; flex-direction: column; gap: 5px; min-width: 160px; }
+.quick-input { width: 100%; min-width: 0; }
+.quick-controls { display: flex; gap: 12px; }
+.quick-error { font-size: 12px; line-height: 1.5; color: var(--danger, #b0392b); }
 .muted { color: var(--text-secondary); font-size: 13px; }
 
 .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 1000; }
@@ -1050,7 +1412,7 @@ watch(() => route.query, () => applyRouteQuery())
 .btn-text.danger { color: #c0392b; }
 .empty-state { padding: 60px 20px; text-align: center; color: var(--text-secondary); }
 
-/* 导入会话条 */
+/* 证书批次条 */
 .session-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .session-label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 .session-chips { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1075,11 +1437,41 @@ watch(() => route.query, () => applyRouteQuery())
 
 /* 勾选列与批量打印弹窗 */
 .sel-col { width: 36px; text-align: center; }
-.print-modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 520px; max-width: 94vw; max-height: 86vh; background: var(--bg-primary); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.25); }
+.print-modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 1180px; max-width: 96vw; height: 88vh; background: var(--bg-primary); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.25); overflow: hidden; }
+
+/* ---------- 批量修改弹窗 ---------- */
+.bulk-mask { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; }
+.bulk-dialog { width: 460px; max-width: 92vw; background: var(--bg-primary); border-radius: 12px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25); overflow: hidden; }
+.bulk-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.bulk-head strong { font-size: 15px; color: var(--text-primary); }
+.bulk-x { border: 0; background: transparent; font-size: 20px; line-height: 1; color: var(--text-secondary); cursor: pointer; padding: 0 4px; }
+.bulk-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.bulk-row { display: flex; align-items: center; gap: 12px; }
+.bulk-input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-primary); color: var(--text-primary); padding: 8px 10px; font-size: 13px; }
+.bulk-input:focus { outline: none; border-color: var(--accent); }
+.bulk-hint { margin: 0; font-size: 12px; color: var(--text-tertiary); }
+.bulk-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
+.print-workspace { display: grid; grid-template-columns: 350px minmax(0, 1fr); flex: 1; min-height: 0; }
+.print-settings { border-right: 1px solid var(--border); min-height: 0; padding: 16px; }
+.print-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+@media (max-width: 850px) {
+  .print-workspace { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+  .print-settings { overflow: visible; border-right: 0; }
+  .print-footer { flex-wrap: wrap; }
+  .print-workspace :deep(.certificate-preview) { min-height: 480px; }
+}
 .print-sel-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .print-sel-list .pill { display: inline-block; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; font-size: 12px; }
 .print-warn { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
 .print-warn .side-title { font-size: 13px; font-weight: 600; color: #8a6d00; }
+.print-preflight { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.print-preflight-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.print-preflight p { margin: 8px 0; line-height: 1.6; }
+.print-issue { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+.print-issue-detail { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.print-issue button { flex-shrink: 0; }
+.print-check-error, .print-issue-error { color: var(--danger, #b0392b); }
+.print-check-ok { color: var(--success, #26734d); }
 
 /* 编号规则面板 */
 .rules-grid { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin: 12px 0; }

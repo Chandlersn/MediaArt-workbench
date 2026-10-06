@@ -5,8 +5,8 @@
 做的事：
   1. 检查 Python 版本与运行依赖（bcrypt / PyJWT），缺失则自动安装；
   2. 检查前端是否已构建 —— 已构建就**只起一个后端进程**（后端直接托管页面）；
-     未构建且本机有 Node 则自动 `npm run build`，没有 Node 则退回「后端 + Vite 双进程」模式；
-  3. 端口被占用时不会盲目再起一个实例（会提示并直接打开已有服务）；
+     未构建且本机有 Node 则自动 `npm run build`，构建失败则尝试 Vite 开发模式；
+  3. 端口被占用时先核对工作台状态和首页；只有匹配才复用已有服务；
   4. 就绪后自动打开浏览器；Ctrl+C 可停止。
 
 设计取舍：优先「单进程」而不是「两个终端」，因为本项目定位是个人本地使用——
@@ -16,6 +16,9 @@ server/main.py 的 translate_path 与 server/config.py 的 STATIC_DIR。
 
 import os
 import re
+import json
+import html
+import http.client
 import sys
 import time
 import socket
@@ -32,11 +35,21 @@ except Exception:
     pass
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BACKEND_PORT = int(os.environ.get('WORKBENCH_PORT', 8080))
-DEV_PORT = 3004
+BACKEND_PORT = int(os.environ.get('WORKBENCH_PORT', os.environ.get('PORT', 8080)))
+DEV_PORT = int(os.environ.get('VITE_DEV_SERVER_PORT', 3004))
 
 REQUIRED_MODULES = [('bcrypt', 'bcrypt'), ('jwt', 'PyJWT')]
 MIN_PYTHON = (3, 8)
+HOME_TITLE = '媒体艺术项目管理工作台'
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# localhost probes must not follow redirects or use a configured HTTP proxy.
+_http = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
 def log(msg: str = '') -> None:
@@ -112,17 +125,82 @@ def port_in_use(port: int) -> bool:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
 
-def wait_ready(url: str, timeout: float = 40.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=1.5) as resp:
-                if resp.status < 500:
-                    return True
-        except Exception:
-            pass
+def _read_response(url: str, content_type: str, limit: int):
+    """Read a bounded local response; unrelated pages and redirects fail closed."""
+    with _http.open(url, timeout=1.5) as response:
+        if response.status != 200 or response.headers.get_content_type() != content_type:
+            return None
+        body = response.read(limit + 1)
+        if len(body) > limit:
+            return None
+        return body.decode('utf-8')
+
+
+def backend_matches(base_url: str) -> bool:
+    """Match this application's status schema, rather than any HTTP response."""
+    try:
+        body = _read_response(base_url.rstrip('/') + '/api/status', 'application/json', 65536)
+        status = json.loads(body) if body else None
+        if not isinstance(status, dict):
+            return False
+        counts = status.get('counts')
+        expected = {'projects', 'organizations', 'players', 'finances', 'knowledge', 'users'}
+        return (
+            status.get('success') is True
+            and status.get('status') == 'ok'
+            and status.get('database') == 'sqlite'
+            and isinstance(status.get('version'), str)
+            and bool(status['version'])
+            and isinstance(counts, dict)
+            and expected.issubset(counts)
+            and all(type(counts[key]) is int and counts[key] >= 0 for key in expected)
+        )
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        return False
+
+
+def homepage_matches(base_url: str, require_built: bool = False) -> bool:
+    """Verify the workbench title, Vue mount and a module entry on the home page."""
+    try:
+        body = _read_response(base_url.rstrip('/') + '/', 'text/html', 524288)
+        if not body:
+            return False
+        title = re.search(r'<title\b[^>]*>(.*?)</title>', body, re.I | re.S)
+        if not title or html.unescape(title.group(1)).strip() != HOME_TITLE:
+            return False
+        if not re.search(r'<div\b[^>]*\bid\s*=\s*[\"\']app[\"\']', body, re.I):
+            return False
+        scripts = re.findall(r'<script\b[^>]*>', body, re.I)
+        entries = [tag for tag in scripts
+                   if re.search(r'\btype\s*=\s*[\"\']module[\"\']', tag, re.I)
+                   and re.search(r'\bsrc\s*=', tag, re.I)]
+        if require_built:
+            entries = [tag for tag in entries if re.search(
+                r'\bsrc\s*=\s*[\"\'](?:\./|/)?(?:js|assets)/[^\"\']+\.js(?:\?[^\"\']*)?[\"\']', tag, re.I)]
+        return bool(entries)
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        return False
+
+
+def wait_ready(probe, timeout: float = 40.0, process=None) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            return False
+        if probe():
+            return True
         time.sleep(0.4)
     return False
+
+
+def open_browser(url: str) -> None:
+    if os.environ.get('WORKBENCH_NO_BROWSER') == '1':
+        log('[·] 已跳过自动打开浏览器（WORKBENCH_NO_BROWSER=1）')
+        return
+    try:
+        webbrowser.open(url)
+    except Exception as e:
+        log(f'[!] 无法自动打开浏览器，请手动访问 {url}（{e}）')
 
 
 def build_frontend() -> bool:
@@ -234,16 +312,31 @@ def main() -> int:
 
     if not check_python():
         return 1
-    if not ensure_deps():
-        return 1
 
-    # 已在运行就不再起第二个实例
+    backend_url = f'http://127.0.0.1:{BACKEND_PORT}'
+    dev_url = f'http://127.0.0.1:{DEV_PORT}'
+    # Reuse only a verified workbench. Do this before dependency installation or
+    # account initialization: an occupied port must not trigger unrelated work.
     if port_in_use(BACKEND_PORT):
         log()
-        log(f'[!] 端口 {BACKEND_PORT} 已有服务在运行，直接打开浏览器。')
-        log(f'    若这不是本工作台，请先关闭占用该端口的程序。')
-        webbrowser.open(f'http://localhost:{BACKEND_PORT}')
+        if not backend_matches(backend_url):
+            log(f'[×] 端口 {BACKEND_PORT} 已被其他服务占用，未检测到工作台后端。')
+            log('    请先关闭占用此端口的程序，或用 WORKBENCH_PORT 指定其他端口。')
+            return 1
+        if homepage_matches(backend_url, require_built=True):
+            open_url = backend_url
+        elif backend_matches(dev_url) and homepage_matches(dev_url):
+            open_url = dev_url
+        else:
+            log('[×] 已找到工作台后端，但未找到可用的工作台首页。')
+            log('    请构建前端后重启后端，或启动 Vite 开发服务器。')
+            return 1
+        log(f'[√] 已确认工作台正在运行：{open_url}')
+        open_browser(open_url)
         return 0
+
+    if not ensure_deps():
+        return 1
 
     # 决定运行模式：优先单进程（后端托管已构建的前端）
     use_single_process = frontend_built()
@@ -272,25 +365,34 @@ def main() -> int:
     )
     _procs.append(backend)
 
-    if not wait_ready(f'http://localhost:{BACKEND_PORT}/api/status', timeout=40):
-        log('[×] 后端启动超时。请检查上方输出中的错误信息。')
+    def backend_ready():
+        return backend_matches(backend_url) and (
+            not use_single_process or homepage_matches(backend_url, require_built=True))
+
+    if not wait_ready(backend_ready, timeout=40, process=backend):
+        log('[×] 后端或工作台首页未就绪。请检查上方输出中的错误信息。')
         stop_all()
         return 1
     log('[√] 后端已就绪')
 
-    open_url = f'http://localhost:{BACKEND_PORT}'
+    open_url = backend_url
 
     if not use_single_process:
         log(f'[·] 启动前端开发服务器（端口 {DEV_PORT}）…')
         frontend = subprocess.Popen(
-            ['npm', 'run', 'dev'], cwd=BASE_DIR, env=env, shell=True,
+            ['npm', 'run', 'dev', '--', '--host', '127.0.0.1',
+             '--port', str(DEV_PORT), '--strictPort'],
+            cwd=BASE_DIR, env=env, shell=True,
         )
         _procs.append(frontend)
-        if wait_ready(f'http://localhost:{DEV_PORT}/', timeout=40):
+        if wait_ready(lambda: backend_matches(dev_url) and homepage_matches(dev_url),
+                      timeout=40, process=frontend):
             log('[√] 前端已就绪')
-            open_url = f'http://localhost:{DEV_PORT}'
+            open_url = dev_url
         else:
-            log('[!] 前端启动超时，仍尝试打开后端地址。')
+            log('[×] 前端启动失败，未找到可用的工作台首页。')
+            stop_all()
+            return 1
 
     log()
     hr()
@@ -310,14 +412,7 @@ def main() -> int:
     log('  按 Ctrl+C 停止服务')
     hr()
 
-    # 设 WORKBENCH_NO_BROWSER=1 可跳过自动开浏览器（无头环境 / 自动化测试用）
-    if os.environ.get('WORKBENCH_NO_BROWSER') == '1':
-        log('[·] 已跳过自动打开浏览器（WORKBENCH_NO_BROWSER=1）')
-    else:
-        try:
-            webbrowser.open(open_url)
-        except Exception:
-            pass
+    open_browser(open_url)
 
     # 等待：任一子进程退出即认为服务结束
     try:

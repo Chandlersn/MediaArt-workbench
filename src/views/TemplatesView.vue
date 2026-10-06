@@ -55,8 +55,12 @@
           </label>
           <label class="field">
             底图
-            <input ref="bgInput" type="file" accept=".png,.jpg,.jpeg" style="display: none" @change="onBgChange" />
-            <button class="btn-secondary btn-sm" @click="bgInput?.click()">{{ editor.background ? '重新上传' : '上传底图' }}</button>
+            <FileDropArea
+              accept=".png,.jpg,.jpeg"
+              :button-text="editor.background ? '重新上传' : '上传底图'"
+              hint="或把图片拖到这里"
+              @change="onBgChange"
+            />
           </label>
           <label class="field">
             纸张
@@ -173,8 +177,12 @@
           <div v-else class="side-block muted">在左侧点击字段框可选中编辑</div>
           <div class="side-block">
             <div class="side-title">字体管理</div>
-            <input ref="fontInput" type="file" accept=".ttf,.otf,.woff,.woff2" style="display: none" @change="onFontChange" />
-            <button class="btn-secondary btn-sm" @click="fontInput?.click()">上传字体文件</button>
+            <FileDropArea
+              accept=".ttf,.otf,.woff,.woff2"
+              button-text="上传字体文件"
+              hint="或把字体文件拖到这里"
+              @change="onFontChange"
+            />
             <div v-if="uploadedFonts.length" class="font-list">
               <div v-for="u in uploadedFonts" :key="u.file" class="font-row">
                 <span class="font-name" :title="u.file">{{ u.name }}</span>
@@ -198,6 +206,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onActivated, nextTick } from 'vue'
 import CustomSelect from '../components/CustomSelect.vue'
+import FileDropArea from '../components/FileDropArea.vue'
 import { useToast } from '../composables/useToast'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 import * as dataService from '../services/dataService'
@@ -212,6 +221,7 @@ const DOC_TYPE_LABELS = { certificate: '证书', roster: '名单', report: '报�
 
 // ---- 数据 ----
 const templates = ref([])
+const previewRecord = ref(null)
 const catalog = ref([])
 const pageSizes = ref({})
 
@@ -222,9 +232,25 @@ const sortedCatalog = computed(() => {
   return list.sort((a, b) => (isZeroFill(a) ? 1 : 0) - (isZeroFill(b) ? 1 : 0))
 })
 
+let templatesRevision = null
+let templatesQueue = Promise.resolve()
+const enqueueTemplates = (operation) => {
+  const result = templatesQueue.then(operation)
+  templatesQueue = result.catch(() => {})
+  return result
+}
 const loadTemplates = async () => {
-  await dataService.load()
-  templates.value = dataService.getData('printTemplates') || []
+  if (editor.value) return
+  try {
+    await enqueueTemplates(async () => {
+      await dataService.load()
+      templates.value = dataService.getData('printTemplates') || []
+      templatesRevision = dataService.getRevision('printTemplates')
+      previewRecord.value = (dataService.getData('certificates') || [])[0] || null
+    })
+  } catch (err) {
+    toastError('读取模板失败：' + (err.message || err))
+  }
 }
 
 onMounted(async () => {
@@ -243,7 +269,6 @@ onActivated(async () => { await loadTemplates() })
 // ---- 模板编辑 ----
 const editor = ref(null)
 const isNew = computed(() => editor.value && !templates.value.some(t => t.id === editor.value.id))
-const bgInput = ref(null)
 const bgNote = ref('')
 const savingTpl = ref(false)
 const selectedField = ref(null)
@@ -303,15 +328,21 @@ const removeTpl = async (t) => {
     confirmText: '删除', cancelText: '取消', type: 'danger'
   })
   if (!ok) return
-  templates.value = templates.value.filter(x => x.id !== t.id)
-  await persistTemplates()
-  success('已删除')
+  try {
+    await persistTemplates(rows => rows.filter(x => x.id !== t.id))
+    success('已删除')
+  } catch (err) {
+    toastError('删除失败：' + (err.message || err))
+  }
 }
 
-const persistTemplates = async () => {
-  dataService.setData('printTemplates', templates.value)
-  await dataService.save()
-}
+const persistTemplates = (update) => enqueueTemplates(async () => {
+  const next = update(templates.value)
+  dataService.setData('printTemplates', next, templatesRevision)
+  const result = await dataService.save()
+  templates.value = next
+  templatesRevision = result._revisions.printTemplates
+})
 
 const onBgChange = async (e) => {
   const file = e.target.files && e.target.files[0]
@@ -327,8 +358,6 @@ const onBgChange = async (e) => {
     checkBgRatio()
   } catch (err) {
     toastError('底图上传失败：' + (err.message || err))
-  } finally {
-    if (bgInput.value) bgInput.value.value = ''
   }
 }
 
@@ -627,8 +656,7 @@ const onCanvasKeydown = (e) => {
 // 存量模板的下划线 DB 列名（与后端 _record_value 同一兼容策略），
 // 都取不到才回退字段标签。
 const previewText = (f) => {
-  const certs = dataService.getData('certificates') || []
-  const rec = certs[0]
+  const rec = previewRecord.value
   const v = rec ? rec[f.column] ?? rec[f.dbColumn] : null
   return (v === null || v === undefined || String(v).trim() === '') ? f.label : String(v)
 }
@@ -636,15 +664,15 @@ const previewText = (f) => {
 // 该字段在台账里是否有真实数据——没有则画布半透明显示，
 // 提示「现在看着有字只是标签回退，打印时会留空」。
 const hasPreviewValue = (f) => {
-  const certs = dataService.getData('certificates') || []
-  const rec = certs[0]
+  const rec = previewRecord.value
   if (!rec) return false
   const v = rec[f.column] ?? rec[f.dbColumn]
   return !(v === null || v === undefined || String(v).trim() === '')
 }
 
 const saveTpl = async () => {
-  const t = editor.value
+  if (savingTpl.value || !editor.value) return
+  const t = JSON.parse(JSON.stringify(editor.value))
   if (!t.name.trim()) { warning('请填写模板名称'); return }
   if (!t.background) { warning('请先上传底图'); return }
   if (!(t.fields || []).length) { warning('请至少勾选一个打印字段'); return }
@@ -656,10 +684,13 @@ const saveTpl = async () => {
       createdAt: templates.value.find(x => x.id === t.id)?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }
-    const idx = templates.value.findIndex(x => x.id === t.id)
-    if (idx >= 0) templates.value[idx] = row
-    else templates.value.unshift(row)
-    await persistTemplates()
+    await persistTemplates(rows => {
+      const next = [...rows]
+      const idx = next.findIndex(x => x.id === t.id)
+      if (idx >= 0) next[idx] = row
+      else next.unshift(row)
+      return next
+    })
     success('模板已保存')
     editor.value = null
   } catch (err) {
@@ -672,7 +703,6 @@ const saveTpl = async () => {
 // ---- 字体 ----
 const systemFonts = ref([])
 const uploadedFonts = ref([])
-const fontInput = ref(null)
 
 /** 用 FontFace API 把上传字体加载进页面，画布预览才能按该字体渲染 */
 const loadFontFace = (f) => {
@@ -707,8 +737,6 @@ const onFontChange = async (e) => {
     success('字体已上传，可在字段属性的「字体」中选用')
   } catch (err) {
     toastError('字体上传失败：' + (err.message || err))
-  } finally {
-    if (fontInput.value) fontInput.value.value = ''
   }
 }
 

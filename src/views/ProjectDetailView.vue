@@ -61,14 +61,11 @@
               placeholder="选择资料类型"
               :options="projectMaterialTypes.map(mt => ({ value: mt.name, label: mt.name }))"
             />
-            <input
-              type="file"
-              ref="materialFileInput"
-              style="display: none;"
+            <FileDropArea
               accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.mp4,.avi,.mov"
+              :file-name="selectedFile?.name"
               @change="handleFileSelect"
             />
-            <button class="btn-secondary" @click="triggerFileSelect">选择文件</button>
             <button class="btn-primary" @click="uploadMaterial" :disabled="!selectedFile || !materialType">
               上传
             </button>
@@ -246,7 +243,6 @@ const goCerts = (extra = {}) => {
 const materialType = ref('')
 const selectedFile = ref(null)
 const uploadTitle = ref('')
-const materialFileInput = ref(null)
 const projectMaterialTypes = ref([])
 const showAddOrgModal = ref(false)
 const availableOrgs = computed(() => {
@@ -371,9 +367,6 @@ const removeOrgFromProject = async (orgId) => {
 }
 
 // 资料上传相关函数
-const triggerFileSelect = () => {
-  materialFileInput.value?.click()
-}
 
 const handleFileSelect = (event) => {
   const file = event.target.files[0]
@@ -412,9 +405,6 @@ const uploadMaterial = async () => {
       loadProjectMaterials()
       materialType.value = ''
       selectedFile.value = null
-      if (materialFileInput.value) {
-        materialFileInput.value.value = ''
-      }
     } else {
       error(`上传失败：${result.message || '未知错误'}`)
     }
@@ -426,7 +416,7 @@ const uploadMaterial = async () => {
 
 const downloadMaterial = async (material) => {
   try {
-    const url = `/api/download-project-material?projectName=${encodeURIComponent(project.value.name)}&fileName=${encodeURIComponent(material.name)}`
+    const url = `/api/download-project-material?projectName=${encodeURIComponent(project.value.name)}&fileName=${encodeURIComponent(material.name)}&materialType=${encodeURIComponent(material.type || material.materialType || '')}`
     const blob = await getBlob(url)
     const objUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -458,7 +448,8 @@ const deleteMaterial = async (index) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         projectName: project.value.name,
-        fileName: material.name
+        fileName: material.name,
+        materialType: material.type || material.materialType || ''
       })
     })
     const result = await response.json()

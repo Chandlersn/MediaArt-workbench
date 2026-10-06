@@ -7,7 +7,8 @@
       </button>
     </div>
 
-    <div v-if="!player" class="empty-state">
+    <div v-if="detailLoading && !player" class="empty-state">加载中…</div>
+    <div v-else-if="!player" class="empty-state">
       选手不存在或已删除
     </div>
 
@@ -64,7 +65,8 @@
       <div class="detail-section">
         <h3>
           参赛资料
-          <span v-if="missingMaterials && missingMaterials.length > 0" class="material-status-badge warning">
+          <span v-if="detailLoading || materialsLoading" class="material-status-badge">检查中…</span>
+          <span v-else-if="missingMaterials && missingMaterials.length > 0" class="material-status-badge warning">
             缺失 {{ missingMaterials.length }} 项资料
           </span>
           <span v-else class="material-status-badge success">资料完整</span>
@@ -94,14 +96,11 @@
               placeholder="选择阶段"
               :options="stageOptions.map(s => ({ value: s, label: s }))"
             />
-            <input
-              type="file"
-              ref="materialFileInput"
-              style="display: none;"
+            <FileDropArea
               accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.mp4,.avi,.mov"
+              :file-name="selectedFile?.name"
               @change="handleFileSelect"
             />
-            <button class="btn-secondary" @click="triggerFileSelect">选择文件</button>
             <button class="btn-primary" @click="uploadMaterial" :disabled="!selectedFile || !materialType">
               上传
             </button>
@@ -247,7 +246,7 @@
 import { computed, onMounted, ref, reactive, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore, useProjectStore, useOrganizationStore } from '../stores'
-import { get, fetchWithAuth, getBlob } from '../services/http.js'
+import { fetchWithAuth, getBlob } from '../services/http.js'
 import * as dataService from '../services/dataService.js'
 import CustomSelect from '../components/CustomSelect.vue'
 import FilePreviewPanel from '../components/FilePreviewPanel.vue'
@@ -275,7 +274,6 @@ const materialType = ref('')
 const uploadStage = ref('')
 const uploadTitle = ref('')
 const selectedFile = ref(null)
-const materialFileInput = ref(null)
 const materialTypes = ref([])
 const expandedStages = reactive({})
 
@@ -306,119 +304,58 @@ const materialsByStage = computed(() => {
   return ordered
 })
 
-// 缺失资料检测
-const missingMaterials = computed(() => {
-  if (!player.value) return []
+// 列表、提醒及详情均使用 player Store 的同一份扫描判断。
+const missingMaterials = computed(() => player.value?.missingTypes || [])
+const detailLoading = ref(true)
+const materialsLoading = ref(false)
+let detailLoadId = 0
+let materialLoadId = 0
 
-  const config = dataService.getData('config') || {}
-  const stageMaterials = config.stageMaterials || {}
-  const materialTypes = dataService.getData('materialTypes') || []
-
-  const currentStage = player.value.stage
-  const requiredTypes = stageMaterials[currentStage] || []
-
-  if (requiredTypes.length === 0) return []
-
-  const applicableTypes = requiredTypes.filter(typeName => {
-    const mt = materialTypes.find(t => t.name === typeName)
-    if (!mt) return true
-    if (!mt.orgId) return true
-    return mt.orgId === player.value.orgId
-  })
-
-  if (applicableTypes.length === 0) return []
-
-  let uploadedTypes = []
-
-  if (player.value.missingTypes && player.value.missingTypes.length > 0) {
-    return player.value.missingTypes
-  }
-
-  const stageHistory = player.value.stageHistory
-  const history = Array.isArray(stageHistory) ? stageHistory :
-    (Array.isArray(player.value.history) ? player.value.history : [])
-  const currentStageHistory = history.find(h => h.stage === currentStage)
-  if (currentStageHistory && currentStageHistory.materials) {
-    uploadedTypes = currentStageHistory.materials.map(m => m.type)
-  } else if (player.value.materials && player.value.materials.length > 0) {
-    uploadedTypes = player.value.materials.map(m => m.type)
-  }
-
-  return applicableTypes.filter(type => !uploadedTypes.includes(type))
-})
-
-// 加载资料类型配置
-const loadMaterialTypes = async () => {
-  try {
-    const result = await get('/api/data/load')
-
-    if (result.data && result.data.materialTypes && result.data.materialTypes.length > 0) {
-      materialTypes.value = result.data.materialTypes
-    } else {
-      materialTypes.value = []
-    }
-  } catch (e) {
-    console.error('加载资料类型失败:', e)
-    materialTypes.value = []
-  }
+const loadMaterialTypes = () => {
+  materialTypes.value = dataService.getData('materialTypes') || []
 }
 
-// 加载选手的资料信息
 const loadPlayerMaterials = async () => {
-  if (!player.value) return
-
+  const target = player.value
+  if (!target) return
+  const requestId = ++materialLoadId
+  materialsLoading.value = true
   try {
-    const result = await get(`/api/scan-player-files?name=${encodeURIComponent(player.value.name)}`)
-
-    if (result.materials) {
-      player.value.materials = result.materials.map(m => ({
-        type: m.type,
-        name: m.file_name,
-        uploadDate: m.upload_date || new Date().toISOString(),
-        stage: m.stage || ''
-      }))
-    } else {
-      player.value.materials = []
-    }
-
+    await playerStore.refreshPlayerMaterials(target)
+    if (requestId !== materialLoadId || player.value !== target) return
     for (const stage of Object.keys(materialsByStage.value)) {
-      if (expandedStages[stage] === undefined) {
-        expandedStages[stage] = (stage === player.value.stage)
-      }
+      if (expandedStages[stage] === undefined) expandedStages[stage] = stage === target.stage
     }
-  } catch (e) {
-    console.error('加载选手资料失败:', e)
-    player.value.materials = []
+  } finally {
+    if (requestId === materialLoadId) materialsLoading.value = false
   }
 }
 
-onMounted(() => {
-  playerStore.loadPlayers()
-  projectStore.loadProjects()
-  orgStore.loadOrganizations()
-  loadMaterialTypes()
-  loadPlayerMaterials()
-})
-
-onActivated(() => {
-  playerStore.loadPlayers()
-  projectStore.loadProjects()
-  orgStore.loadOrganizations()
-  loadPlayerMaterials()
-})
-
-watch(
-  () => route.params.id,
-  (newId, oldId) => {
-    if (newId !== oldId) {
-      playerStore.loadPlayers()
-      projectStore.loadProjects()
+const loadDetail = async () => {
+  const requestId = ++detailLoadId
+  detailLoading.value = true
+  try {
+    await Promise.all([
+      playerStore.loadPlayers(),
+      projectStore.loadProjects(),
       orgStore.loadOrganizations()
-      loadMaterialTypes()
-      loadPlayerMaterials()
-    }
+    ])
+    if (requestId !== detailLoadId) return
+    if (!playerStore.loaded) throw new Error(playerStore.error || '选手数据加载失败')
+    loadMaterialTypes()
+    await loadPlayerMaterials()
+  } catch (e) {
+    error(`加载选手资料失败：${e.message}`)
+  } finally {
+    if (requestId === detailLoadId) detailLoading.value = false
   }
-)
+}
+
+onMounted(loadDetail)
+onActivated(loadDetail)
+watch(() => route.params.id, (newId, oldId) => {
+  if (newId !== oldId) loadDetail()
+})
 
 const getProjectName = () => {
   if (!player.value?.projectId) return '-'
@@ -470,6 +407,7 @@ const advancePlayer = async () => {
   showAdvanceModal.value = false
   advanceForm.value = { stage: '', customStage: '', result: '', customResult: '', note: '' }
   await playerStore.loadPlayers()
+  await loadPlayerMaterials()
   success('晋级记录已保存')
 }
 
@@ -488,9 +426,6 @@ const confirmDelete = async () => {
 }
 
 // 资料上传相关函数
-const triggerFileSelect = () => {
-  materialFileInput.value?.click()
-}
 
 const handleFileSelect = (event) => {
   const file = event.target.files[0]
@@ -534,8 +469,6 @@ const uploadMaterial = async () => {
       // 刷新选手数据和资料
       await playerStore.loadPlayers()
       await loadPlayerMaterials()
-      // 重新计算缺失资料
-      await playerStore.calculateMissingMaterials()
       // 展开上传阶段
       const stage = uploadStage.value || player.value.stage || '通用资料'
       expandedStages[stage] = true
@@ -544,9 +477,6 @@ const uploadMaterial = async () => {
       uploadStage.value = ''
       uploadTitle.value = ''
       selectedFile.value = null
-      if (materialFileInput.value) {
-        materialFileInput.value.value = ''
-      }
     } else {
       error(`上传失败：${result.message || '未知错误'}`)
     }
@@ -558,7 +488,7 @@ const uploadMaterial = async () => {
 
 const downloadMaterial = async (material) => {
   try {
-    const url = `/api/download-player-material?playerName=${encodeURIComponent(player.value.name)}&fileName=${encodeURIComponent(material.name)}`
+    const url = `/api/download-player-material?playerName=${encodeURIComponent(player.value.name)}&fileName=${encodeURIComponent(material.name)}&materialType=${encodeURIComponent(material.type || material.materialType || '')}`
     const blob = await getBlob(url)
     const objUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -587,7 +517,7 @@ const previewMaterial = (material) => {
 }
 
 // 删除选手资料：后端 /api/delete-player-material 已提供
-const deleteMaterial = async (index) => {
+const deleteMaterial = async (material) => {
   const confirmed = await confirm({
     title: '删除确认',
     message: '确定要删除这个资料吗？',
@@ -596,14 +526,15 @@ const deleteMaterial = async (index) => {
 
   if (!confirmed) return
 
-  const material = player.value.materials[index]
+  if (!material?.name) { error('无法识别要删除的资料'); return }
   try {
     const response = await fetchWithAuth('/api/delete-player-material', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         playerName: player.value.name,
-        fileName: material.name
+        fileName: material.name,
+        materialType: material.type || material.materialType || ''
       })
     })
     const result = await response.json()
@@ -611,8 +542,7 @@ const deleteMaterial = async (index) => {
     if (result.success) {
       success('删除成功')
       await playerStore.loadPlayers()
-      loadPlayerMaterials()
-      await playerStore.calculateMissingMaterials()
+      await loadPlayerMaterials()
     } else {
       error(`删除失败：${result.message}`)
     }

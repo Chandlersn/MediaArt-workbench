@@ -5,7 +5,9 @@
 
     数据管理
       GET    /api/data/load              全量数据读取
-      POST   /api/data/save              全量数据落库（系统唯一写路径）
+      POST   /api/data/save              按权限与加载版本保存修改的数据段
+      GET    /api/data/export            管理员导出业务数据
+      POST   /api/data/import            管理员导入业务数据
       POST   /api/data/backup            用当前数据创建备份
       GET    /api/data/list-backups      备份列表
       POST   /api/data/restore           从备份恢复
@@ -49,14 +51,59 @@ from urllib.parse import unquote, quote
 
 from server.config import BASE_DIR
 from server.database.store import data_store
+from server.database.db import WRITABLE_SECTIONS, SnapshotConflictError
 from server.archive.taxonomy import ARCHIVE_TOP_DIRS, resolve_subdir_for_type
 from server.utils.auth_middleware import extract_user_from_request
 from server.utils.permissions import has_permission
 from server.utils.trash import send_to_trash
+from server.materials.metadata import store_material_file
 
 logger = logging.getLogger(__name__)
 
 JSON_HEADERS = {'Content-Type': 'application/json'}
+
+# 普通业务保存只允许对应权限域的数据。账户及服务端日志走独立接口。
+SECTION_MODULES = {
+    'projects': 'projects', 'organizations': 'organizations', 'players': 'players',
+    'finances': 'finances', 'knowledge': 'knowledge',
+    'certificates': 'projects', 'certSettings': 'projects',
+    'projectChecklists': 'projects', 'checklistState': 'projects',
+    'config': 'settings', 'materialTypes': 'settings', 'checklists': 'settings',
+    'printTemplates': 'settings', 'templates': 'resources',
+    'archiveConfig': 'resources', 'archiveMappings': 'resources',
+}
+
+# 配置的写入仍受 settings:edit 控制；业务页面可读取其自身所需的字典。
+SHARED_CONFIG_FIELDS = {
+    'projects': {'stages', 'projectTypes', 'statusList', 'stageMaterials'},
+    'players': {'stages', 'stageMaterials'},
+    'organizations': {'orgTypes'},
+    'finances': {'financeTypes', 'incomeCategories', 'expenseCategories'},
+    'resources': {'resourceCategories'},
+}
+SHARED_READ_MODULES = {
+    'materialTypes': ('projects', 'players', 'organizations'),
+    'printTemplates': ('projects',),
+    'checklists': ('projects',),
+}
+
+
+def _admin(request_context):
+    if request_context.get('user', {}).get('role') != 'admin':
+        return _ok({'success': False, 'message': '此操作需要管理员权限'}, 403)
+    return None
+
+
+def _record_ids(key, value):
+    if isinstance(value, dict) and key in ('knowledge', 'templates'):
+        return {item.get('id') for rows in value.values() if isinstance(rows, list)
+                for item in rows if isinstance(item, dict) and item.get('id')}
+    if not isinstance(value, list):
+        return set()
+    if key == 'certificates':
+        return {(r.get('certNumber'), r.get('sessionId', ''))
+                for r in value if isinstance(r, dict)}
+    return {r['id'] for r in value if isinstance(r, dict) and 'id' in r}
 
 # ---------- 目录常量 ----------
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -75,7 +122,7 @@ _ENTITY_TOP_DIR = {
 }
 
 # 备份目录名形如 2026-09-29_20-15-30，也兼容 migration_ 前缀
-_BACKUP_NAME_RE = re.compile(r'^(?:\w+_)?(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})(?:-(\d{2}))?$')
+_BACKUP_NAME_RE = re.compile(r'^(?:\w+_)?(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})(?:-(\d{2}))?(?:_[0-9a-f]{8})?$')
 
 
 # ==================== 响应与取值小工具 ====================
@@ -158,7 +205,7 @@ def _safe_rel(rel: str) -> Optional[str]:
         seg = seg.strip()
         if not seg or seg == '.':
             continue
-        if seg == '..':
+        if seg == '..' or ':' in seg or any(ord(char) < 32 for char in seg):
             return None
         parts.append(seg)
     return '/'.join(parts)
@@ -358,19 +405,28 @@ class ResourcesRouter:
             if norm == '/api/data/load' and method == 'GET':
                 if (a := _auth(request_context)):
                     return a
-                return self.load_data()
+                return self.load_data(request_context)
 
             if norm == '/api/data/save' and method == 'POST':
                 if (a := _auth(request_context)):
                     return a
-                if (p := _perm(request_context, 'resources', 'edit')):
-                    return p
                 return self.save_data(request_context)
+
+            if norm in ('/api/data/export', '/api/data/import'):
+                if (a := _auth(request_context)):
+                    return a
+                if (a := _admin(request_context)):
+                    return a
+                if norm.endswith('/export') and method == 'GET':
+                    return _ok({'success': True, 'data': data_store.load_all_data()})
+                if norm.endswith('/import') and method == 'POST':
+                    payload = _json_body(request_context)
+                    return self._restore_payload(payload.get('data') if isinstance(payload, dict) else None)
 
             if norm == '/api/data/backup' and method == 'POST':
                 if (a := _auth(request_context)):
                     return a
-                if (p := _perm(request_context, 'resources', 'edit')):
+                if (p := _admin(request_context)):
                     return p
                 return self.backup(request_context)
 
@@ -383,7 +439,7 @@ class ResourcesRouter:
                 if (a := _auth(request_context)):
                     return a
                 # 恢复会覆盖全库，按规范要求 admin（只有 admin 有 settings:edit）
-                if (p := _perm(request_context, 'settings', 'edit')):
+                if (p := _admin(request_context)):
                     return p
                 return self.restore(request_context)
 
@@ -403,14 +459,14 @@ class ResourcesRouter:
             if norm == '/api/data/sync/import' and method == 'POST':
                 if (a := _auth(request_context)):
                     return a
-                if (p := _perm(request_context, 'settings', 'edit')):
+                if (p := _admin(request_context)):
                     return p
                 return self.sync_import()
 
             if norm == '/api/data/sync/export' and method == 'POST':
                 if (a := _auth(request_context)):
                     return a
-                if (p := _perm(request_context, 'settings', 'edit')):
+                if (p := _admin(request_context)):
                     return p
                 return self.sync_export()
 
@@ -467,30 +523,79 @@ class ResourcesRouter:
 
     # ---------- 数据管理 ----------
 
-    def load_data(self) -> Dict[str, Any]:
-        """全量读取。前端 dataService.load() 取 res.data。"""
-        data = data_store.load_all_data()
+    def load_data(self, request_context) -> Dict[str, Any]:
+        """返回可见业务数据；登录凭据不进入浏览器的普通数据快照。"""
+        # 日志和通知使用各自接口；普通页面不随业务数据加载完整历史记录。
+        data = data_store.load_all_data(sections=set(SECTION_MODULES) | {'users'})
+        for user in data.get('users', []):
+            user.pop('password', None)
+        role = request_context.get('user', {}).get('role', 'viewer')
+        for key, module in {**SECTION_MODULES, 'users': 'users'}.items():
+            if not has_permission(role, module, 'view'):
+                data.get('_revisions', {}).pop(key, None)
+                if key == 'config':
+                    allowed = set().union(*(fields for business, fields in SHARED_CONFIG_FIELDS.items()
+                                            if has_permission(role, business, 'view')))
+                    data[key] = {k: v for k, v in data.get(key, {}).items() if k in allowed}
+                elif any(has_permission(role, business, 'view')
+                         for business in SHARED_READ_MODULES.get(key, ())):
+                    continue
+                else:
+                    data.pop(key, None)
         return _ok({'success': True, 'data': data, 'exists': True})
 
     def save_data(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """全量落库（系统唯一写路径）。"""
+        """校验写入范围、权限和加载版本，再原子保存。"""
         payload = _json_body(request_context)
         if not isinstance(payload, dict):
             return _ok({'success': False, 'message': '请求体必须是 JSON 对象'}, 400)
-        if data_store.save_all_data(payload):
-            return _ok({'success': True, 'message': '数据保存成功'})
-        return _ok({'success': False, 'message': '部分数据未能写入，请查看服务端日志'}, 500)
+        keys = set(payload) - {'_snapshot', '_revisions', '_version'}
+        if not keys:
+            return _ok({'success': False, 'message': '没有要保存的数据'}, 400)
+        if keys - SECTION_MODULES.keys():
+            return _ok({'success': False, 'message': '该数据只能通过专用管理接口修改'}, 403)
+        revisions = payload.get('_revisions')
+        if not isinstance(revisions, dict) or any(not isinstance(revisions.get(k), str) for k in keys):
+            return _ok({'success': False, 'message': '缺少数据版本，请刷新页面后重试'}, 409)
+        current = data_store.load_all_data(sections=keys)
+        for key in keys:
+            module = SECTION_MODULES[key]
+            if (denied := _perm(request_context, module, 'edit')):
+                return denied
+            if _record_ids(key, current.get(key)) - _record_ids(key, payload[key]):
+                if (denied := _perm(request_context, module, 'delete')):
+                    return denied
+        saved_revisions = {}
+        try:
+            if data_store.save_all_data(payload, revision_result=saved_revisions):
+                return _ok({'success': True, 'message': '数据保存成功', '_revisions': saved_revisions})
+        except SnapshotConflictError:
+            return _ok({'success': False, 'message': '数据已被其他操作修改，请刷新页面后重试；本次未保存'}, 409)
+        return _ok({'success': False, 'message': '字段或关联数据校验失败，本次修改已全部撤销'}, 400)
+
+    def _restore_payload(self, payload):
+        if not isinstance(payload, dict) or not payload:
+            return _ok({'success': False, 'message': '备份必须是包含业务数据的 JSON 对象'}, 400)
+        payload = dict(payload)
+        if 'settings' in payload and 'config' not in payload:
+            payload['config'] = payload['settings']
+        restore = {k: v for k, v in payload.items() if k in WRITABLE_SECTIONS}
+        if not restore:
+            return _ok({'success': False, 'message': '备份中没有可恢复的业务数据'}, 400)
+        # 旧版导出没有包含全部数据域：只恢复备份实际提供的段，缺失段保持原样。
+        restore['_snapshot'] = True
+        if not data_store.save_all_data(restore):
+            return _ok({'success': False, 'message': '备份字段或关联数据无效，未修改任何现有数据'}, 400)
+        return _ok({'success': True, 'message': '业务数据已恢复',
+                    'restoredSections': sorted(k for k in restore if not k.startswith('_'))})
 
     def backup(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """用请求体里的数据创建一份备份目录 data/backup/<时间戳>/。"""
-        payload = _json_body(request_context)
-        if not isinstance(payload, dict):
-            return _ok({'success': False, 'message': '请求体必须是 JSON 对象'}, 400)
-
-        name = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        """直接从服务端的一致快照创建业务数据备份，不信任客户端缓存。"""
+        payload = data_store.load_all_data()
+        name = datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '_' + uuid.uuid4().hex[:8]
         target = os.path.join(BACKUP_DIR, name)
         try:
-            os.makedirs(target, exist_ok=True)
+            os.makedirs(target, exist_ok=False)
             with open(os.path.join(target, 'workbench_data.json'), 'w', encoding='utf-8') as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -522,21 +627,22 @@ class ResourcesRouter:
                 has_json = os.path.isfile(os.path.join(path, 'workbench_data.json'))
                 has_db = os.path.isfile(os.path.join(path, 'workbench.db'))
                 date, time_str = _split_backup_name(name)
+                try:
+                    from server.database.maintenance import is_auto_backup
+                    auto = is_auto_backup(name)
+                except Exception:
+                    auto = False
                 backups.append({
                     'name': name,
                     'date': date,
                     'time': time_str,
                     'has_data': has_json or has_db,
+                    'is_auto': auto,
                 })
         return _ok({'success': True, 'backups': backups})
 
     def restore(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
-        """从备份恢复。
-
-        只把备份内容**读出来返回**，不直接写库——前端拿到 data 后会
-        合并进内存快照再走 /api/data/save，避免两套写路径并存。
-        仅当备份里只有 workbench.db（无 JSON）时才走文件级回滚。
-        """
+        """服务端校验后恢复备份中所有业务段；SQLite 备份通过在线备份 API 恢复。"""
         payload = _json_body(request_context)
         raw_name = (payload or {}).get('backup_name', '') if isinstance(payload, dict) else ''
         name = _sanitize_filename(raw_name)
@@ -554,7 +660,7 @@ class ResourcesRouter:
                     data = json.load(f)
             except Exception as e:
                 return _ok({'success': False, 'message': f'备份文件损坏: {e}'}, 500)
-            return _ok({'success': True, 'message': '备份恢复成功', 'data': data})
+            return self._restore_payload(data)
 
         if os.path.isfile(os.path.join(backup_path, 'workbench.db')):
             try:
@@ -708,6 +814,8 @@ class ResourcesRouter:
         material_type = (fields.get('materialType') or '').strip()
 
         dest_dir: Optional[str] = None
+        entity_material = False
+        material_stage = ''
         final_name = _sanitize_filename(raw_filename)
 
         for kind, field in (('project', 'projectName'),
@@ -719,9 +827,11 @@ class ResourcesRouter:
             top = _ENTITY_TOP_DIR[kind]
             sub = resolve_subdir_for_type(top, material_type)
             dest_dir = _safe_under(get_archives_dir(), top, entity, sub)
+            entity_material = True
+            material_stage = (fields.get('stage') or '').strip() if kind == 'player' else ''
             final_name = _compose_filename(
                 raw_filename, title=title, subject=entity,
-                stage=(fields.get('stage') or '').strip() if kind == 'player' else '')
+                stage=material_stage)
             break
 
         if dest_dir is None:
@@ -730,19 +840,23 @@ class ResourcesRouter:
             if target is None:
                 return _ok({'success': False, 'message': '非法目标路径'}, 400)
             if target.split('/', 1)[0] in ARCHIVE_TOP_DIRS:
-                dest_dir = _safe_under(get_archives_dir(), target)
+                dest_dir = _safe_under(get_archives_dir(), *target.split('/'))
             else:
-                dest_dir = _safe_under(get_resources_dir(), target)
+                dest_dir = _safe_under(get_resources_dir(), *target.split('/'))
             final_name = _compose_filename(raw_filename, title=title)
 
         if not dest_dir:
             return _ok({'success': False, 'message': '目标路径越界'}, 400)
 
         try:
-            os.makedirs(dest_dir, exist_ok=True)
-            file_path = os.path.join(dest_dir, final_name)
-            with open(file_path, 'wb') as f:
-                f.write(file_data)
+            if entity_material:
+                final_name = store_material_file(dest_dir, final_name, file_data,
+                                                 material_type, material_stage)
+            else:
+                os.makedirs(dest_dir, exist_ok=True)
+                file_path = os.path.join(dest_dir, final_name)
+                with open(file_path, 'wb') as f:
+                    f.write(file_data)
         except Exception as e:
             logger.error(f"写入上传文件失败: {e}", exc_info=True)
             return _ok({'success': False, 'message': f'保存文件失败: {e}'}, 500)

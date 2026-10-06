@@ -333,6 +333,24 @@ CREATE INDEX IF NOT EXISTS idx_print_logs_time ON print_logs(printed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_print_logs_entity ON print_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_print_logs_type ON print_logs(doc_type);
 
+-- ========== 全局搜索全文索引（FTS5）==========
+-- 为什么不用 trigram：trigram 要求查询至少 3 个字符，
+--   中文两字词（「张三」「金奖」）在 trigram 下**恒为 0 结果**（已实测）。
+-- 方案：入库时把文本**按字符切开**（"张三" → "张 三"），查询时用 phrase 语法
+--   （"张 三" 表示「张」紧跟「三」），等价于子串匹配，任意长度都能走索引。
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+    doc_id        UNINDEXED,
+    module        UNINDEXED,
+    display_title UNINDEXED,
+    display_sub   UNINDEXED,
+    category      UNINDEXED,
+    entity_names  UNINDEXED,
+    doc_date      UNINDEXED,
+    route         UNINDEXED,
+    body,
+    tokenize = 'unicode61'
+);
+
 -- 初始化数据版本
 INSERT OR IGNORE INTO data_version (id, version, schema_version)
 VALUES (1, '2.3', '1.0');

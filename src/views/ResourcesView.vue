@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onActivated } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import Modal from '../components/Modal.vue'
 import FilePreviewPanel from '../components/FilePreviewPanel.vue'
+import FileDropArea from '../components/FileDropArea.vue'
 import { useToast } from '../composables/useToast'
 import { useConfirmDialog } from '../composables/useConfirmDialog'
 import { get, post, getBlob, fetchWithAuth } from '../services/http.js'
@@ -21,7 +22,6 @@ const currentView = ref('list')
 const currentSort = ref('date-desc')
 const showUploadModal = ref(false)
 const uploadFile = ref(null)
-const uploadFileInput = ref(null)
 const uploadCategory = ref('')
 
 // 分类管理
@@ -184,7 +184,6 @@ const deleteFile = async (file) => {
   } catch (e) { console.error(e); error('删除失败') }
 }
 
-const triggerUploadFile = () => uploadFileInput.value?.click()
 const handleUploadFileSelect = (e) => { uploadFile.value = e.target.files[0] }
 const submitUpload = async () => {
   if (!uploadFile.value) return
@@ -197,7 +196,7 @@ const submitUpload = async () => {
   try {
     const response = await fetchWithAuth('/api/upload', { method: 'POST', body: formData })
     const result = await response.json()
-    if (result.success) { success('上传成功'); showUploadModal.value = false; uploadFile.value = null; if (uploadFileInput.value) uploadFileInput.value.value = ''; await loadFiles() }
+    if (result.success) { success('上传成功'); showUploadModal.value = false; uploadFile.value = null; await loadFiles() }
     else error(result.message || '上传失败')
   } catch (e) { console.error(e); error('上传失败') }
 }
@@ -306,9 +305,7 @@ onActivated(() => { loadFiles() })
       </div>
       <div class="form-group">
         <label class="form-label">选择文件</label>
-        <input type="file" ref="uploadFileInput" style="display:none;" @change="handleUploadFileSelect" />
-        <button class="btn-secondary" @click="triggerUploadFile">选择文件</button>
-        <span v-if="uploadFile" class="selected-file">{{ uploadFile.name }}</span>
+        <FileDropArea :file-name="uploadFile?.name" @change="handleUploadFileSelect" />
       </div>
       <template #footer>
         <button class="btn-secondary" @click="showUploadModal = false">取消</button>

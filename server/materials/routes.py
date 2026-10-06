@@ -39,7 +39,7 @@ from urllib.parse import unquote
 
 from server.database.store import data_store
 from server.resources.routes import get_archives_dir, _content_disposition
-from server.archive.taxonomy import strip_seq
+from server.archive.taxonomy import strip_seq, MATERIAL_TYPE_TO_SUBDIR
 from server.utils.auth_middleware import extract_user_from_request
 from server.utils.trash import send_to_trash
 
@@ -184,12 +184,14 @@ class MaterialsRouter:
     def scan(self, kind: str, request_context: Dict[str, Any]) -> Dict[str, Any]:
         """列出 <归档分类>/<实体名>/ 下各二级目录（序号_类型）中的文件。
 
-        type 取二级目录名去掉序号前缀（如 01_策划文档 -> 策划文档）。
+        新上传保留准确类型；历史文件无元信息时按目录类型兜底。
         """
         name = _qp(request_context, 'name', '')
         base = self._entity_dir(kind, name)
         materials: List[Dict[str, Any]] = []
         if base and os.path.isdir(base):
+            from server.materials.metadata import load_metadata, get_metadata
+            metadata = load_metadata()
             for sub in sorted(os.listdir(base)):
                 sub_dir = os.path.join(base, sub)
                 if not os.path.isdir(sub_dir):
@@ -204,12 +206,13 @@ class MaterialsRouter:
                         head = f['name'].rsplit('.', 1)[0].split('__', 1)[0]
                         if head.startswith(name + '_'):
                             stage = head[len(name) + 1:]
+                    exact = get_metadata(os.path.join(sub_dir, f['name']), metadata)
                     materials.append({
-                        'type': mtype,
+                        'type': (exact.get('type') or mtype) if exact else mtype,
                         'file_name': f['name'],
                         'name': f['name'],
                         'upload_date': f['upload_date'],
-                        'stage': stage,
+                        'stage': exact.get('stage', stage) if exact else stage,
                     })
         return _ok({'success': True, 'materials': materials})
 
@@ -223,19 +226,30 @@ class MaterialsRouter:
         """
         root = self._entity_dir(kind, entity_name)
         fn = _safe_component(unquote(file_name or ''))
-        mt = _safe_component(unquote(material_type or ''))
+        mt = unquote(material_type or '').strip()
         if not root or not os.path.isdir(root) or not fn:
             return None
-        # 优先在「类型匹配」的二级目录里找，其次遍历所有二级目录
+        # 精确类型优先；无元信息的旧文件才用目录名称/别名匹配。
+        # 传了类型却只找到其他类型时不能回退，否则会下载/删除同名的另一份资料。
         subs = [d for d in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, d))]
-        if mt:
-            subs.sort(key=lambda d: 0 if strip_seq(d) == mt else 1)
-        for sub in subs:
-            cand = os.path.join(root, sub, fn)
-            if os.path.isfile(cand):
-                return cand
-        cand = os.path.join(root, fn)      # 兜底：直接挂在实体目录下
-        return cand if os.path.isfile(cand) else None
+        candidates = [(sub, os.path.join(root, sub, fn)) for sub in subs]
+        candidates.append(('', os.path.join(root, fn)))
+        candidates = [(sub, path) for sub, path in candidates if os.path.isfile(path)]
+        if not mt:
+            return candidates[0][1] if candidates else None
+        from server.materials.metadata import load_metadata, get_metadata
+        metadata = load_metadata()
+        exact_matches, legacy_matches = [], []
+        alias_dir = MATERIAL_TYPE_TO_SUBDIR.get(_SUB[kind], {}).get(mt)
+        for sub, path in candidates:
+            exact = get_metadata(path, metadata)
+            if exact and exact.get('type'):
+                if exact['type'] == mt:
+                    exact_matches.append(path)
+            elif sub == mt or strip_seq(sub) == mt or (alias_dir and sub == alias_dir):
+                legacy_matches.append(path)
+        matches = exact_matches or legacy_matches
+        return matches[0] if len(matches) == 1 else None
 
     def _locate(self, kind: str, request_context: Dict[str, Any]) -> Optional[str]:
         if kind == 'project':
@@ -288,7 +302,9 @@ class MaterialsRouter:
             return _ok({'success': False, 'message': '文件不存在'}, 404)
         try:
             rid = send_to_trash(target)
-            return _ok({'success': True, 'message': '已移入回收站' if rid else '已删除'})
+            if not rid:
+                return _ok({'success': False, 'message': '删除失败，原文件已保留'}, 500)
+            return _ok({'success': True, 'message': '已移入回收站'})
         except Exception as e:
             return _ok({'success': False, 'message': str(e)}, 500)
 

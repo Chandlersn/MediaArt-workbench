@@ -34,6 +34,11 @@ def auto_migrate():
     print(f"正在加载 JSON 数据: {JSON_FILE}")
     with open(JSON_FILE, 'r', encoding='utf-8') as f:
         json_data = json.load(f)
+
+    # Export revisions belong to the source database. An explicit migration is
+    # a replacement, including sections that were empty in the exported data.
+    json_data.pop('_revisions', None)
+    json_data['_snapshot'] = True
     
     print(f"加载成功:")
     print(f"  - 项目数量: {len(json_data.get('projects', []))}")

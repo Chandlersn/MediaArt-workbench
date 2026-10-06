@@ -22,9 +22,18 @@ except Exception:  # Pillow 缺失时降级：图标功能不可用，但绝不�
 
 logger = logging.getLogger(__name__)
 
-shell32 = ctypes.windll.shell32
-user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
+shell32 = user32 = gdi32 = None
+_WINDOWS_API_AVAILABLE = False
+if platform.system() == 'Windows':
+    try:
+        shell32 = ctypes.windll.shell32
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        _WINDOWS_API_AVAILABLE = True
+    except (AttributeError, OSError) as e:
+        # 图标提取是可选能力，缺少系统 DLL 不能阻断归档路由导入。
+        shell32 = user32 = gdi32 = None
+        logger.warning(f"Windows icon APIs unavailable: {e}")
 
 SHGFI_ICON = 0x000000100
 SHGFI_LARGEICON = 0x000000000
@@ -238,7 +247,7 @@ def _extract_icon_to_png(hIcon, size: int = 48) -> Optional[bytes]:
 
 
 def get_file_icon(ext: str, size: int = 48) -> Optional[bytes]:
-    if platform.system() != 'Windows' or not _PIL_AVAILABLE:
+    if platform.system() != 'Windows' or not _WINDOWS_API_AVAILABLE or not _PIL_AVAILABLE:
         return None
 
     ext = ext.lstrip('.').lower()
@@ -271,7 +280,7 @@ def get_file_icon(ext: str, size: int = 48) -> Optional[bytes]:
 
 
 def get_folder_icon(size: int = 48) -> Optional[bytes]:
-    if platform.system() != 'Windows' or not _PIL_AVAILABLE:
+    if platform.system() != 'Windows' or not _WINDOWS_API_AVAILABLE or not _PIL_AVAILABLE:
         return None
 
     cache_key = f"__folder__{size}"

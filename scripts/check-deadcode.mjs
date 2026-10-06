@@ -13,6 +13,13 @@ import { fileURLToPath } from 'url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = path.join(ROOT, 'src')
 
+// 明确保留但暂不接入页面的功能；恢复入口时应移除此项。
+// 逐文件记录原因，不能按目录或通配符掩盖其他未引用模块。
+const RETAINED_MODULES = new Map([
+  ['components/SubmitLinkModal.vue', '资料提交链接的管理入口已暂缓，保留组件供多设备协作功能恢复时使用']
+])
+const retained = []
+
 function collectFiles(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name)
@@ -113,7 +120,10 @@ for (const f of files) {
     }
     if (referenced) break
   }
-  if (!referenced) findings.unusedFiles.push({ file: r })
+  if (!referenced) {
+    if (RETAINED_MODULES.has(r)) retained.push({ file: r, reason: RETAINED_MODULES.get(r) })
+    else findings.unusedFiles.push({ file: r })
+  }
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────
@@ -130,6 +140,10 @@ console.log('')
 console.log('=== 3. 从未被引用的模块文件 ===')
 if (!findings.unusedFiles.length) console.log('  (无)')
 for (const d of findings.unusedFiles) console.log(`  ${d.file}`)
+if (retained.length) {
+  console.log('  明确保留的暂缓入口：')
+  for (const d of retained) console.log(`    ${d.file} — ${d.reason}`)
+}
 
 console.log('')
 console.log(`合计: 无引用导出 ${findings.deadExports.length} | 多余导出 ${findings.extraExports.length} | 未引用文件 ${findings.unusedFiles.length}`)

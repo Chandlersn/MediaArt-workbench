@@ -7,19 +7,49 @@ export const useFinanceStore = defineStore('finance', () => {
   const financeRecords = ref([])
   const currentFinance = ref(null)
   const loading = ref(false)
+  const loaded = ref(false)
+  let revision = null
   const error = ref(null)
+  let mutationQueue = Promise.resolve()
+  const mutate = operation => {
+    const result = mutationQueue.then(operation)
+    mutationQueue = result.catch(() => {})
+    return result
+  }
 
-  const loadRecords = async () => {
+  const readRecords = async () => {
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
       await dataService.load()
       financeRecords.value = dataService.getData('finances') || []
+      revision = dataService.getRevision('finances')
+      loaded.value = true
+      return true
     } catch (e) {
       console.error('加载财务记录失败:', e)
       error.value = e.message
+      return false
     } finally {
       loading.value = false
+    }
+  }
+
+  const loadRecords = () => mutate(readRecords)
+
+  const ensureLoaded = async () => {
+    if (!loaded.value) await readRecords()
+    if (!loaded.value) throw new Error(error.value || '数据加载失败，无法保存，请重试')
+  }
+
+  const persist = async candidate => {
+    dataService.setData('finances', candidate, revision)
+    const result = await dataService.save()
+    revision = result._revisions?.finances ?? revision
+    financeRecords.value = candidate
+    if (currentFinance.value) {
+      currentFinance.value = financeRecords.value.find(f => f.id === currentFinance.value.id) || null
     }
   }
 
@@ -31,39 +61,40 @@ export const useFinanceStore = defineStore('finance', () => {
     currentFinance.value = finance
   }
 
-  const saveRecord = async (financeData) => {
+  const saveRecord = financeData => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const now = new Date().toISOString()
-      if (!financeData.id) {
-        financeData.id = `f${Date.now()}`
-        financeData.createdAt = now
-        financeRecords.value.push(financeData)
+      const isNew = !financeData.id
+      const record = { ...financeData, updatedAt: now }
+      const candidate = [...financeRecords.value]
+      if (isNew) {
+        record.id = `f${Date.now()}`
+        record.createdAt = now
+        candidate.push(record)
       } else {
         const index = financeRecords.value.findIndex(f => f.id === financeData.id)
-        if (index !== -1) {
-          financeRecords.value[index] = { ...financeRecords.value[index], ...financeData }
-        }
+        if (index === -1) throw new Error('财务记录不存在，请刷新后重试')
+        candidate[index] = { ...financeRecords.value[index], ...record }
       }
-      financeData.updatedAt = now
 
-      dataService.setData('finances', financeRecords.value)
-      await dataService.save()
+      await persist(candidate)
 
       try {
         const auditStore = useAuditLogStore()
         await auditStore.addLog({
-          action: !financeData.id ? 'create_finance' : 'update_finance',
-          actionType: !financeData.id ? 'create' : 'update',
+          action: isNew ? 'create_finance' : 'update_finance',
+          actionType: isNew ? 'create' : 'update',
           target: '财务',
-          description: `${!financeData.id ? '创建' : '更新'}财务记录"${financeData.title || financeData.category || '未命名'}"`
+          description: `${isNew ? '创建' : '更新'}财务记录"${financeData.title || financeData.category || '未命名'}"`
         })
       } catch (e) {
         console.warn('记录审计日志失败:', e)
       }
 
-      return financeData
+      return candidate.find(f => f.id === record.id)
     } catch (e) {
       console.error('保存财务记录失败:', e)
       error.value = e.message
@@ -71,7 +102,7 @@ export const useFinanceStore = defineStore('finance', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const addRecord = async (financeData) => {
     return saveRecord(financeData)
@@ -81,16 +112,13 @@ export const useFinanceStore = defineStore('finance', () => {
     return saveRecord({ ...financeData, id })
   }
 
-  const deleteRecord = async (id) => {
+  const deleteRecord = id => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const record = financeRecords.value.find(f => f.id === id)
-      financeRecords.value = financeRecords.value.filter(f => f.id !== id)
-      if (currentFinance.value?.id === id) currentFinance.value = null
-
-      dataService.setData('finances', financeRecords.value)
-      await dataService.save()
+      await persist(financeRecords.value.filter(f => f.id !== id))
 
       try {
         const auditStore = useAuditLogStore()
@@ -110,7 +138,7 @@ export const useFinanceStore = defineStore('finance', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const getFinanceStats = (filterType = 'all') => {
     const filtered = filterType === 'all'
@@ -141,6 +169,7 @@ export const useFinanceStore = defineStore('finance', () => {
     financeRecords,
     currentFinance,
     loading,
+    loaded,
     error,
     loadRecords,
     getRecordById,

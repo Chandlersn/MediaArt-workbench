@@ -15,6 +15,7 @@ const playerStore = usePlayerStore()
 const organizationStore = useOrganizationStore()
 
 const isEdit = computed(() => !!route.params.id)
+const formReady = ref(false)
 const fieldDefs = computed(() => KNOWLEDGE_TYPES[formData.value.type]?.fields || [])
 
 const formData = ref({
@@ -56,10 +57,14 @@ watch(() => formData.value.type, () => {
 })
 
 onMounted(async () => {
-  await knowledgeStore.loadItems()
-  await Promise.all([projectStore.loadItems?.(), playerStore.loadItems?.(), organizationStore.loadItems?.()].filter(Boolean))
+  await Promise.all([knowledgeStore.loadItems(), projectStore.loadProjects(), playerStore.loadPlayers(), organizationStore.loadOrganizations()])
+  if (!knowledgeStore.loaded || !projectStore.loaded || !playerStore.loaded || !organizationStore.loaded) {
+    error('表单数据加载失败，请刷新后重试')
+    return
+  }
   if (isEdit.value) {
     const item = knowledgeStore.getItemById(route.params.id)
+    if (!item) { error('知识条目不存在，请返回列表'); return }
     if (item) {
       formData.value = {
         title: item.title || '',
@@ -72,9 +77,11 @@ onMounted(async () => {
       }
     }
   }
+  formReady.value = true
 })
 
 const handleSave = async () => {
+  if (!formReady.value || knowledgeStore.loading) return
   if (!formData.value.title.trim()) { warning('请输入标题'); return }
   const tagsArray = formData.value.tags
     ? formData.value.tags.split(/[,，]/).map(t => t.trim()).filter(Boolean)
@@ -118,7 +125,7 @@ const handleCancel = () => {
     >
       <template #actions>
         <button class="btn btn-secondary" @click="handleCancel">取消</button>
-        <button class="btn btn-primary" @click="handleSave" :disabled="!formData.title.trim()">
+        <button class="btn btn-primary" @click="handleSave" :disabled="!formReady || knowledgeStore.loading || !formData.title.trim()">
           {{ isEdit ? '保存修改' : '创建' }}
         </button>
       </template>

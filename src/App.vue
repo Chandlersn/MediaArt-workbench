@@ -177,7 +177,7 @@
     <main class="main-content">
       <router-view v-slot="{ Component }">
         <transition name="fade" mode="out-in">
-          <component :is="Component" />
+          <component v-if="loggedIn || !route.meta.requiresAuth" :is="Component" :key="loggedIn" />
         </transition>
       </router-view>
     </main>
@@ -189,7 +189,7 @@
     <ConfirmDialog />
     <Message />
     <NotificationPanel
-      v-if="!isPublicRoute"
+      v-if="!isPublicRoute && loggedIn"
       :visible="showNotifications"
       @close="showNotifications = false"
       @navigate="handleNotificationNavigate"
@@ -225,7 +225,7 @@ const isPublicRoute = computed(() => !!route.meta.public)
 const showLogin = ref(false)
 const currentUsername = ref('未登录')
 // 是否已登录：登录后按钮变「退出」
-const loggedIn = ref(false)
+const loggedIn = ref(isAuthenticated())
 const notificationCount = ref(0)
 const showNotifications = ref(false)
 const notificationPanelRef = ref(null)
@@ -246,6 +246,7 @@ const toggleTheme = () => {
 }
 
 const toggleNotifications = () => {
+  if (!loggedIn.value) { showLogin.value = true; return }
   showNotifications.value = !showNotifications.value
   if (showNotifications.value) {
     loadUnreadCount(true)
@@ -280,6 +281,7 @@ let _lastNotificationFetch = 0
 const NOTIFICATION_DEBOUNCE_MS = 10000
 
 const loadUnreadCount = async (force = false) => {
+  if (!loggedIn.value) { notificationCount.value = 0; return }
   const now = Date.now()
   if (!force && now - _lastNotificationFetch < NOTIFICATION_DEBOUNCE_MS) return
 
@@ -296,6 +298,7 @@ const loadUnreadCount = async (force = false) => {
 const handleLoginSuccess = (user) => {
   currentUsername.value = user?.username || '未知用户'
   loggedIn.value = true
+  loadUnreadCount(true)
   success('登录成功')
 }
 
@@ -330,6 +333,8 @@ const updateUserInfo = () => {
 const handleLogout = async () => {
   await logout()
   updateUserInfo()
+  showNotifications.value = false
+  notificationCount.value = 0
   info('已退出登录')
   // 当前页面若需要登录态，退回首页，避免停留在无法刷新的页面
   if (router.currentRoute.value.meta?.requiresAuth) {
@@ -364,6 +369,13 @@ function handleVisibilityChange() {
   }
 }
 
+const handleAuthRequired = () => {
+  updateUserInfo()
+  showNotifications.value = false
+  notificationCount.value = 0
+  showLogin.value = true
+}
+
 onMounted(() => {
   updateCurrentDate()
   updateUserInfo()
@@ -374,10 +386,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
 
   // 监听认证过期事件，显示登录弹窗
-  window.addEventListener('auth:required', () => {
-    updateUserInfo()
-    showLogin.value = true
-  })
+  window.addEventListener('auth:required', handleAuthRequired)
 
   // 点击外部关闭通知面板
   document.addEventListener('click', handleClickOutside)
@@ -387,6 +396,7 @@ onUnmounted(() => {
   stopTimers()
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  window.removeEventListener('auth:required', handleAuthRequired)
 })
 </script>
 

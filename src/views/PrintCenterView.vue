@@ -49,7 +49,7 @@
                 <button
                   v-if="l.template_id && refIdsOf(l).length"
                   class="btn-text"
-                  :disabled="reprinting"
+                  :disabled="!!reprinting"
                   @click="reprint(l)"
                 >{{ reprinting === l.id ? '重打中…' : '重打' }}</button>
               </td>
@@ -57,7 +57,9 @@
             <tr v-if="expanded === l.id">
               <td colspan="7" class="ref-row">
                 <span class="muted">涉及证书：</span>
-                <span v-for="n in refIdsOf(l)" :key="n" class="pill mono">{{ n }}</span>
+                <span v-for="r in refIdsOf(l)" :key="printReferenceKey(r)" class="pill mono"
+                  :title="r.sessionId ? `批次：${r.sessionId}` : '批次未记录'"
+                >{{ printReferenceNumber(r) }}</span>
               </td>
             </tr>
           </template>
@@ -75,6 +77,7 @@ import { useConfirmDialog } from '../composables/useConfirmDialog'
 import {
   fetchPrintLogs, fetchPrintDoc, openHtmlWindow, generatePrint, archivePrint
 } from '../services/print'
+import { parsePrintReferences, printReferenceKey, printReferenceNumber } from '../utils/printReferences'
 
 const { error: toastError, success, warning } = useToast()
 const { confirm } = useConfirmDialog()
@@ -86,12 +89,7 @@ const logType = ref('')
 const expanded = ref('')
 const reprinting = ref('')
 
-const refIdsOf = (l) => {
-  try {
-    const v = typeof l.ref_ids === 'string' ? JSON.parse(l.ref_ids) : (l.ref_ids || [])
-    return Array.isArray(v) ? v.map(String) : []
-  } catch { return [] }
-}
+const refIdsOf = (l) => parsePrintReferences(l.ref_ids)
 
 const loadLogs = async () => {
   try {
@@ -123,8 +121,7 @@ const reprint = async (l) => {
   try {
     const res = await generatePrint({
       templateId: l.template_id,
-      certNumbers: ids.map(n => ({ certNumber: n, sessionId: '' })),
-      sessionId: ''
+      certNumbers: ids
     })
     if (!res.success) throw new Error(res.message || '生成失败')
     if ((res.warnings || []).length) {

@@ -217,7 +217,14 @@ class UsersRouter:
                 'headers': {'Content-Type': 'application/json'}
             }
         user = request_context.get('user', {}) or {}
-        user_id = data.get('userId') or user.get('user_id')
+        user_id = user.get('user_id')
+        requested_user_id = data.get('userId')
+        if requested_user_id is not None and requested_user_id != user_id:
+            return {
+                'status': 403,
+                'body': {'success': False, 'message': '只能修改当前账号的密码', 'error': 'FORBIDDEN'},
+                'headers': {'Content-Type': 'application/json'}
+            }
         target = data_store.users.get_by_id(user_id) if user_id else None
         if not target:
             return {

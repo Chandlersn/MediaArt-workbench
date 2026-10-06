@@ -18,36 +18,33 @@ const ARCHIVE_RESERVED_CATEGORY_IDS = ['project', 'player', 'organization']
 export const useResourceStore = defineStore('resource', () => {
   const categories = ref([])
   const loading = ref(false)
+  let configRevision = null
+  let loadedConfig = {}
 
   const load = async () => {
     loading.value = true
     try {
       await dataService.load()
       const config = dataService.getData('config') || {}
+      loadedConfig = JSON.parse(JSON.stringify(config))
+      configRevision = dataService.getRevision('config')
       let cats = config.resourceCategories
       if (!Array.isArray(cats) || !cats.length) {
         cats = DEFAULT_CATEGORIES.map(c => ({ ...c }))
-        await persist(cats)
       }
       // 1) 过滤归档管理专属分类（项目/选手/机构），它们不应出现在资源中心
       // 2) 修正历史遗留：音频分类 folder 曾写成单数 audio，磁盘目录为 audios
-      let changed = false
       const cleaned = cats
-        .filter(c => {
-          const drop = ARCHIVE_RESERVED_CATEGORY_IDS.includes(c.id)
-          if (drop) changed = true
-          return !drop
-        })
+        .filter(c => !ARCHIVE_RESERVED_CATEGORY_IDS.includes(c.id))
         .map(c => {
           if (c.id === 'audio' && c.folder === 'audio') {
-            changed = true
             return { ...c, folder: 'audios' }
           }
           return c
         })
-      if (changed) await persist(cleaned)
       categories.value = cleaned
     } catch (e) {
+      configRevision = null
       console.error('加载资源分类失败:', e)
       categories.value = DEFAULT_CATEGORIES.map(c => ({ ...c }))
     } finally {
@@ -56,14 +53,13 @@ export const useResourceStore = defineStore('resource', () => {
   }
 
   const persist = async (cats) => {
-    const config = dataService.getData('config') || {}
-    config.resourceCategories = cats
-    dataService.setData('config', config)
-    try {
-      await dataService.save()
-    } catch (e) {
-      console.warn('保存资源分类失败:', e)
-    }
+    if (!configRevision) throw new Error('资源分类尚未加载，请刷新后重试')
+    const config = { ...loadedConfig, resourceCategories: cats }
+    dataService.setData('config', config, configRevision)
+    const result = await dataService.save()
+    configRevision = result._revisions.config
+    loadedConfig = config
+    categories.value = cats
   }
 
   const addCategory = async (cat) => {
@@ -73,21 +69,18 @@ export const useResourceStore = defineStore('resource', () => {
     const id = folder.toLowerCase().replace(/[^a-z0-9]/g, '_')
     if (categories.value.some(c => c.id === id || c.folder === folder)) return false
     const next = [...categories.value, { id, name, folder, icon: cat.icon || '📁' }]
-    categories.value = next
     await persist(next)
     return true
   }
 
   const updateCategory = async (id, patch) => {
     const next = categories.value.map(c => (c.id === id ? { ...c, ...patch } : c))
-    categories.value = next
     await persist(next)
   }
 
   const deleteCategory = async (id) => {
     // 仅移除分类定义，不删除文件夹中已有文件
     const next = categories.value.filter(c => c.id !== id)
-    categories.value = next
     await persist(next)
   }
 

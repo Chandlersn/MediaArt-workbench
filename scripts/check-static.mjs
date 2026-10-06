@@ -35,6 +35,7 @@ const GLOBALS = new Set([
   'window', 'document', 'localStorage', 'sessionStorage', 'navigator', 'location',
   'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
   'fetch', 'URL', 'URLSearchParams', 'Blob', 'File', 'FileReader', 'FormData',
+  'DataTransfer', 'DragEvent',
   'Image', 'Audio', 'Event', 'CustomEvent', 'MutationObserver', 'IntersectionObserver',
   'requestAnimationFrame', 'cancelAnimationFrame', 'alert', 'confirm', 'prompt',
   'Math', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Date', 'RegExp',

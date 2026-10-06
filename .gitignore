@@ -76,6 +76,7 @@ vite.config.js.timestamp-*.mjs
 .pytest_cache/
 .coverage
 htmlcov/
+/test-results/
 
 # ===== Trae IDE =====
 .trae/

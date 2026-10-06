@@ -1,24 +1,24 @@
-/**
- * 底层 HTTP 封装，统一处理 token、JSON 序列化、错误响应
- * 支持 401 自动刷新 Token 并重试
- */
-
+/** HTTP 请求统一携带凭证；并发 401 共享刷新结果，每个请求最多重试一次。 */
 import { getAccessToken, clearAuthData } from '../utils/auth-constants'
 import { refreshToken } from './auth'
 
 const BASE_URL = ''
+let refreshPromise = null
 
-// 防止刷新 token 时并发请求导致多次刷新
-let isRefreshing = false
-let refreshSubscribers = []
+function requireLogin(message = '登录已过期，请重新登录') {
+  clearAuthData()
+  window.dispatchEvent(new CustomEvent('auth:required'))
+  return new Error(message)
+}
 
-function getHeaders(extra = {}) {
-  const token = getAccessToken()
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...extra
+function refreshAuth() {
+  if (!refreshPromise) {
+    refreshPromise = Promise.resolve()
+      .then(() => refreshToken())
+      .catch(() => { throw requireLogin() })
+      .finally(() => { refreshPromise = null })
   }
+  return refreshPromise
 }
 
 async function parseResponse(res) {
@@ -30,131 +30,6 @@ async function parseResponse(res) {
   }
 }
 
-/**
- * 处理响应，支持 401 自动刷新 Token
- */
-async function handleResponse(res, retryFn) {
-  const data = await parseResponse(res)
-
-  if (res.ok) return data
-
-  // 401 未授权，尝试刷新 Token
-  if (res.status === 401) {
-    // 后端不同路径返回的错误码不统一（UNAUTHORIZED / INVALID_OR_EXPIRED_TOKEN /
-    // "认证失败，Token 无效或缺失" …），只匹配某一个字段会漏判，
-    // 所以把 error + message 拼起来再做大小写不敏感匹配。
-    const errorText = `${data.error || ''} ${data.message || ''}`.toLowerCase()
-
-    // 只有「被撤销」这类必须重新登录的情况才直接登出
-    if (errorText.includes('revoked') || errorText.includes('撤销')) {
-      clearAuthData()
-      window.dispatchEvent(new CustomEvent('auth:required'))
-      throw new Error('Token 已被撤销，请重新登录')
-    }
-
-    // 其余 401（过期 / 无效 / 缺失）统一走刷新重试；刷新失败会登出并跳登录
-    if (!isRefreshing) {
-      isRefreshing = true
-      try {
-        await refreshToken()
-        isRefreshing = false
-        // 通知所有等待的请求重试
-        refreshSubscribers.forEach(cb => cb())
-        refreshSubscribers = []
-        // 重试原请求
-        return retryFn()
-      } catch (refreshError) {
-        isRefreshing = false
-        refreshSubscribers = []
-        clearAuthData()
-        // 触发全局登录（通过路由守卫）
-        window.dispatchEvent(new CustomEvent('auth:required'))
-        throw new Error('登录已过期，请重新登录')
-      }
-    } else {
-      // 等待刷新完成后再重试
-      return new Promise((resolve) => {
-        refreshSubscribers.push(() => {
-          resolve(retryFn())
-        })
-      })
-    }
-  }
-
-  throw new Error(data.message || `请求失败 (${res.status})`)
-}
-
-export async function get(path) {
-  const doRequest = async () => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: 'GET',
-      headers: getHeaders()
-    })
-    return handleResponse(res, doRequest)
-  }
-  return doRequest()
-}
-
-export async function post(path, body) {
-  const doRequest = async () => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify(body)
-    })
-    return handleResponse(res, doRequest)
-  }
-  return doRequest()
-}
-
-export async function put(path, body) {
-  const doRequest = async () => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: 'PUT',
-      headers: getHeaders(),
-      body: JSON.stringify(body)
-    })
-    return handleResponse(res, doRequest)
-  }
-  return doRequest()
-}
-
-export async function del(path) {
-  const doRequest = async () => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: 'DELETE',
-      headers: getHeaders()
-    })
-    return handleResponse(res, doRequest)
-  }
-  return doRequest()
-}
-
-/**
- * 以带鉴权头的方式获取二进制内容（图片 / PDF / 视频 / 音频预览用）
- *
- * 为什么不能直接把接口 URL 塞进 <img src> / <iframe src> / <video src>：
- * 元素级请求由浏览器发起，**不会附带 Authorization 头**，而下载类接口都要求 JWT，
- * 结果是拿到 401、什么都显示不出来。这里用 fetch 取回 Blob，再由调用方
- * createObjectURL 交给元素使用，凭证始终走请求头、不落到 URL 上。
- *
- * 错误响应（含 401）仍是 JSON，交给 handleResponse 复用 token 刷新与重试逻辑。
- */
-export async function getBlob(path) {
-  const doRequest = async () => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: 'GET',
-      headers: getHeaders()
-    })
-    if (res.ok) return res.blob()
-    return handleResponse(res, doRequest)
-  }
-  return doRequest()
-}
-
-/**
- * 获取带 token 的请求头（用于 FormData 等非 JSON 请求）
- */
 export function getAuthHeaders(extra = {}) {
   const token = getAccessToken()
   return {
@@ -163,41 +38,48 @@ export function getAuthHeaders(extra = {}) {
   }
 }
 
-/**
- * 通用 fetch 包装器，自动携带 token，支持 401 刷新
- * @param {string} url - 请求 URL
- * @param {object} options - fetch 选项
- * @returns {Promise<Response>}
- */
+/** 返回原始 Response，适用于 FormData、JSON 和二进制请求。 */
 export async function fetchWithAuth(url, options = {}) {
-  const doRequest = async () => {
-    const headers = getAuthHeaders(options.headers || {})
-    const res = await fetch(`${BASE_URL}${url}`, { ...options, headers })
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const requestToken = getAccessToken()
+    const res = await fetch(`${BASE_URL}${url}`, {
+      ...options,
+      headers: getAuthHeaders(options.headers || {})
+    })
+    if (res.status !== 401) return res
 
-    if (res.status === 401) {
-      if (!isRefreshing) {
-        isRefreshing = true
-        try {
-          await refreshToken()
-          isRefreshing = false
-          refreshSubscribers.forEach(cb => cb())
-          refreshSubscribers = []
-          return doRequest()
-        } catch {
-          isRefreshing = false
-          refreshSubscribers = []
-          clearAuthData()
-          window.dispatchEvent(new CustomEvent('auth:required'))
-          throw new Error('登录已过期，请重新登录')
-        }
-      } else {
-        return new Promise((resolve) => {
-          refreshSubscribers.push(() => resolve(doRequest()))
-        })
-      }
+    const data = await res.clone().json().catch(() => ({}))
+    const errorText = `${data.error || ''} ${data.message || ''}`.toLowerCase()
+    if (errorText.includes('revoked') || errorText.includes('撤销')) {
+      throw requireLogin('Token 已被撤销，请重新登录')
     }
+    if (attempt === 1) throw requireLogin()
 
-    return res
+    // 另一个请求可能已在本次 401 到达前完成刷新；直接用新凭证重试。
+    if (!getAccessToken() || getAccessToken() === requestToken) await refreshAuth()
   }
-  return doRequest()
+}
+
+async function requestJSON(path, method, body) {
+  const res = await fetchWithAuth(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+  })
+  const data = await parseResponse(res)
+  if (!res.ok) throw new Error(data.message || `请求失败 (${res.status})`)
+  return data
+}
+
+export const get = path => requestJSON(path, 'GET')
+export const post = (path, body) => requestJSON(path, 'POST', body)
+export const put = (path, body) => requestJSON(path, 'PUT', body)
+export const del = path => requestJSON(path, 'DELETE')
+
+/** 获取带鉴权的预览内容，由调用方创建和回收 Blob URL。 */
+export async function getBlob(path) {
+  const res = await fetchWithAuth(path, { method: 'GET' })
+  if (res.ok) return res.blob()
+  const data = await parseResponse(res)
+  throw new Error(data.message || `请求失败 (${res.status})`)
 }

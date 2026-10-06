@@ -7,6 +7,8 @@
       </div>
     </div>
 
+    <p v-if="!authenticated" class="empty-state">登录后查看项目、选手和待办数据。请点击右上角“登录”。</p>
+    <template v-else>
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-icon">◈</div>
@@ -50,7 +52,7 @@
         <button class="action-btn" @click="$router.push('/players/new')">
           添加选手
         </button>
-        <button class="action-btn" @click="$router.push('/settings')">
+        <button class="action-btn" @click="$router.push('/material-config')">
           资料配置
         </button>
       </div>
@@ -76,18 +78,24 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, onActivated } from 'vue'
 import { useProjectStore, useOrganizationStore, usePlayerStore } from '../stores'
+import { isAuthenticated } from '../services/auth'
+
+// App 在登录状态变化时重新挂载当前页面，避免访客请求受保护的数据。
+const authenticated = isAuthenticated()
 
 const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 const playerStore = usePlayerStore()
 
 const loadDashboardData = async () => {
+  if (!authenticated) return
   await Promise.all([
     projectStore.loadProjects(),
     orgStore.loadOrganizations(),

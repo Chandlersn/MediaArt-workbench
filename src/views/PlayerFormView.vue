@@ -16,14 +16,14 @@
             <input v-model="formData.name" type="text" class="form-input" placeholder="请输入姓名" />
           </div>
           <div class="form-group">
-            <label>性别</label>
+            <label>性别 *</label>
             <CustomSelect v-model="formData.gender" style="width:100%">
               <option value="男">男</option>
               <option value="女">女</option>
             </CustomSelect>
           </div>
           <div class="form-group">
-            <label>艺术类别</label>
+            <label>艺术类别 *</label>
             <CustomSelect v-model="formData.category" style="width:100%">
               <option value="">请选择</option>
               <option value="音乐">音乐</option>
@@ -81,7 +81,7 @@
 
       <div class="form-actions">
         <button class="btn-secondary" @click="$router.push('/players')">取消</button>
-        <button class="btn-primary" @click="handleSave" :disabled="!formData.name">
+        <button class="btn-primary" @click="handleSave" :disabled="!formReady || playerStore.loading || !formData.name">
           {{ isEdit ? '保存修改' : '添加选手' }}
         </button>
       </div>
@@ -105,6 +105,7 @@ const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 
 const isEdit = computed(() => !!route.params.id)
+const formReady = ref(false)
 
 const formData = ref({
   name: '',
@@ -128,11 +129,17 @@ onMounted(async () => {
     orgStore.loadOrganizations(),
     playerStore.loadPlayers()
   ])
+  if (!projectStore.loaded || !orgStore.loaded || !playerStore.loaded) {
+    error('表单数据加载失败，请刷新后重试')
+    return
+  }
 
   if (isEdit.value) {
     const player = playerStore.getPlayerById(route.params.id)
+    if (!player) { error('选手不存在，请返回列表'); return }
     if (player) {
       formData.value = {
+        id: player.id,
         name: player.name || '',
         gender: player.gender || '男',
         category: player.category || '',
@@ -146,9 +153,11 @@ onMounted(async () => {
       }
     }
   }
+  formReady.value = true
 })
 
 const handleSave = async () => {
+  if (!formReady.value || playerStore.loading) return
   const { valid, errors } = validate({
     name: [() => required(formData.value.name, '姓名')],
     gender: [() => required(formData.value.gender, '性别')],

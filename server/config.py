@@ -8,6 +8,7 @@ import time
 
 # Port configuration (supports environment variable override)
 PORT = int(os.environ.get('WORKBENCH_PORT', os.environ.get('PORT', 8080)))
+HOST = os.environ.get('WORKBENCH_HOST', '127.0.0.1').strip() or '127.0.0.1'
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 进程启动时间（模块在进程启动时导入一次，用于 /api/status 的服务运行时间）
@@ -51,31 +52,26 @@ DIST_DIR_IN_BASE = os.path.join(BASE_DIR, 'dist')
 APP_DIST_DIR = os.path.join(APP_DIR, 'dist')
 EXTRA_RESOURCES_DIST = os.path.join(BASE_DIR, 'dist')
 
-# 静态资源根目录。
-#
-# ⚠️ 此前这段逻辑有缺陷：只看 dist/ **目录**是否存在，且最后一个分支把 STATIC_DIR
-#    设成 BASE_DIR（仓库根）——那里是**开发版** index.html，引用 /src/main.js，
-#    只有 Vite dev server 能解析。后果是打包后的桌面端（Electron 加载
-#    http://localhost:8080）拿不到构建产物，页面直接白屏。
-#    现改为：以 `dist/index.html` 是否存在作为「已构建」的判据。
+# 静态页面只从构建目录提供；开发页面由 Vite 提供，不能回退到含源码和数据的仓库根。
 def _pick_static_dir() -> str:
     for cand in (DIST_DIR_IN_BASE, APP_DIST_DIR):
         if os.path.isfile(os.path.join(cand, 'index.html')):
             return cand
-    return BASE_DIR
+    return DIST_DIR_IN_BASE
 
 
 STATIC_DIR = _pick_static_dir()
 STATIC_BASE_URL = ''
 
-# 前端是否已构建。False 时后端只能提供开发版页面，需配合 Vite dev server 使用。
-FRONTEND_BUILT = STATIC_DIR != BASE_DIR
+# 未构建时仅提供 API 与白名单业务文件，开发页面由 Vite 提供。
+FRONTEND_BUILT = os.path.isfile(os.path.join(STATIC_DIR, 'index.html'))
 
-# 业务目录前缀：素材库 / 归档 / 模板 / 运行时数据。
+# 公开业务文件目录；data 中仅打印页面需要免鉴权引用的图片与字体可访问。
 # 这些**始终**在仓库根下，不能跟着 STATIC_DIR 走进 dist/。
 # 注意 /assets/ 两边都可能出现（前端构建产物 vs 业务素材），解析时先查构建产物再回退。
 BUSINESS_PATH_PREFIXES = (
-    '/resources/', '/assets/', '/MediaArt_Archives/', '/templates/', '/data/',
+    '/resources/', '/assets/', '/MediaArt_Archives/', '/templates/',
+    '/data/print-bg/', '/data/print-fonts/',
 )
 
 # ========== Environment Detection ==========

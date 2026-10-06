@@ -317,6 +317,7 @@
           <button class="modal-close" @click="showBackup = false">&times;</button>
         </div>
         <div class="modal-body">
+          <p class="empty-hint">业务数据备份包含证书、模板配置和清单；附件文件、打印历史和提交链接需另行保留。</p>
           <div v-if="backupLoading" class="status-loading">加载备份列表中...</div>
           <div v-else-if="backups.length === 0" class="empty-hint">
             暂无服务端备份，点击"创建备份"生成第一份备份
@@ -326,7 +327,10 @@
               <div class="backup-info">
                 <span class="backup-name">{{ backup.date }}</span>
                 <span class="backup-time" v-if="backup.time">{{ backup.time }}</span>
-                <span class="backup-badge" v-if="backup.has_data">完整</span>
+                <!-- 自动备份由系统每日创建、只保留最近 20 份；手动备份不参与轮转，会一直留着 -->
+                <span class="backup-badge badge-auto" v-if="backup.is_auto" title="系统每日自动创建，只保留最近 20 份">自动</span>
+                <span class="backup-badge badge-manual" v-else title="手动创建，不参与自动清理，会一直保留">手动</span>
+                <span class="backup-badge" v-if="backup.has_data">有数据</span>
                 <span class="backup-badge badge-warning" v-else>数据缺失</span>
               </div>
               <div class="backup-actions">
@@ -449,7 +453,7 @@
               </label>
               <label class="radio-item">
                 <input type="radio" v-model="exportOptions.format" value="json">
-                <span>JSON (完整数据备份)</span>
+                <span>JSON（业务数据备份）</span>
               </label>
             </div>
           </div>
@@ -715,7 +719,7 @@ const loadArchivePath = async () => {
   } catch (e) {
     try {
       await dataService.load()
-      const settings = dataService.getData('settings') || {}
+      const settings = dataService.getData('config') || {}
       archivePath.value = settings.archivePath || ''
       updateArchivePathStatus()
     } catch (e2) {
@@ -820,16 +824,7 @@ const saveArchivePath = async () => {
     const result = await post('/api/config/archive-path', { path: archivePath.value })
 
     if (result.success) {
-      try {
-        await dataService.load()
-        let settings = dataService.getData('settings') || {}
-        settings = { ...settings, archivePath: archivePath.value }
-        dataService.setData('settings', settings)
-        await dataService.save()
-      } catch (e) {
-        console.error('保存归档路径到dataService失败:', e)
-      }
-      success('归档路径已保存，刷新页面后生效')
+      success('归档路径已保存，重启服务后生效')
     } else {
       error(result.message || '保存失败')
     }
@@ -873,7 +868,7 @@ const loadResourcePath = async () => {
   } catch (e) {
     try {
       await dataService.load()
-      const settings = dataService.getData('settings') || {}
+      const settings = dataService.getData('config') || {}
       resourcePath.value = settings.resourcePath || ''
       updateResourcePathStatus()
     } catch (e2) {
@@ -911,16 +906,7 @@ const saveResourcePath = async () => {
     const result = await post('/api/config/resources-path', { path: resourcePath.value })
 
     if (result.success) {
-      try {
-        await dataService.load()
-        let settings = dataService.getData('settings') || {}
-        settings = { ...settings, resourcePath: resourcePath.value }
-        dataService.setData('settings', settings)
-        await dataService.save()
-      } catch (e) {
-        console.error('保存资源路径到dataService失败:', e)
-      }
-      success('资源路径已保存，刷新页面后生效')
+      success('资源路径已保存，重启服务后生效')
     } else {
       error(result.message || '保存失败')
     }
@@ -951,21 +937,24 @@ const openResourceFolder = async () => {
   }
 }
 
+let categoriesRevision = null
+let categoriesConfig = {}
+let categoryQueue = Promise.resolve()
+
 const loadResourceCategories = async () => {
   try {
     await dataService.load()
-    let settings = dataService.getData('settings') || {}
+    const settings = dataService.getData('config') || {}
+    categoriesRevision = dataService.getRevision('config')
+    if (!categoriesRevision) throw new Error('没有读取资源分类的权限')
+    categoriesConfig = JSON.parse(JSON.stringify(settings))
     // 归档管理专属分类（项目/选手/机构）不出现在资源中心，这里一并过滤掉
     const reserved = ['project', 'player', 'organization']
-    let cats = (settings.resourceCategories || []).filter(c => !reserved.includes(c.id))
-    if (cats.length !== (settings.resourceCategories || []).length) {
-      settings = { ...settings, resourceCategories: cats }
-      dataService.setData('settings', settings)
-      await dataService.save()
-    }
-    resourceCategories.value = cats
+    resourceCategories.value = (categoriesConfig.resourceCategories || []).filter(c => !reserved.includes(c.id))
   } catch (e) {
+    categoriesRevision = null
     console.error('加载资源分类失败:', e)
+    error(`加载资源分类失败：${e.message}`)
   }
 }
 
@@ -981,33 +970,51 @@ const editCategory = (index) => {
   showCategoryModal.value = true
 }
 
-const saveCategory = () => {
-  if (newCategory.value.name && newCategory.value.folder) {
-    if (editingCategoryIndex.value >= 0) {
-      resourceCategories.value[editingCategoryIndex.value] = { ...newCategory.value }
-    } else {
-      resourceCategories.value.push({ ...newCategory.value })
+const updateCategories = (change) => {
+  const result = categoryQueue.then(async () => {
+    if (!categoriesRevision) throw new Error('资源分类尚未成功加载，请刷新后重试')
+    const before = JSON.parse(JSON.stringify(resourceCategories.value))
+    try {
+      change()
+      await saveResourceCategories()
+      return true
+    } catch (e) {
+      resourceCategories.value = before
+      throw e
     }
-    saveResourceCategories()
-    showCategoryModal.value = false
-  }
+  })
+  categoryQueue = result.catch(() => {})
+  return result.catch(e => {
+    error(`保存资源分类失败：${e.message}`)
+    return false
+  })
 }
 
-const removeCategory = (index) => {
-  resourceCategories.value.splice(index, 1)
-  saveResourceCategories()
+const saveCategory = async () => {
+  const category = { ...newCategory.value }
+  const index = editingCategoryIndex.value
+  if (!category.name || !category.folder) return
+  const saved = await updateCategories(() => {
+    if (index >= 0) resourceCategories.value[index] = category
+    else resourceCategories.value.push(category)
+  })
+  if (saved) showCategoryModal.value = false
+}
+
+const removeCategory = async (index) => {
+  const target = resourceCategories.value[index]
+  if (!target) return
+  await updateCategories(() => {
+    resourceCategories.value = resourceCategories.value.filter(c => c.folder !== target.folder)
+  })
 }
 
 const saveResourceCategories = async () => {
-  try {
-    await dataService.load()
-    let settings = dataService.getData('settings') || {}
-    settings = { ...settings, resourceCategories: resourceCategories.value }
-    dataService.setData('settings', settings)
-    await dataService.save()
-  } catch (e) {
-    console.error('保存资源分类失败:', e)
-  }
+  const settings = { ...categoriesConfig, resourceCategories: resourceCategories.value }
+  dataService.setData('config', settings, categoriesRevision)
+  const result = await dataService.save()
+  categoriesRevision = result._revisions.config
+  categoriesConfig = JSON.parse(JSON.stringify(settings))
 }
 
 const importData = () => {
@@ -1020,7 +1027,7 @@ const importData = () => {
 
     const confirmed = await confirm({
       title: '导入确认',
-      message: '导入数据将覆盖现有数据，是否继续？',
+      message: '将恢复文件中包含的业务数据；附件文件、打印历史和提交链接不在此备份范围内。是否继续？',
       type: 'warning'
     })
     if (!confirmed) return
@@ -1029,17 +1036,9 @@ const importData = () => {
       const text = await file.text()
       const data = JSON.parse(text)
 
-      await dataService.load()
-      if (data.projects) dataService.setData('projects', data.projects)
-      if (data.organizations) dataService.setData('organizations', data.organizations)
-      if (data.players) dataService.setData('players', data.players)
-      if (data.finances) dataService.setData('finances', data.finances)
-      if (data.knowledge) dataService.setData('knowledge', data.knowledge)
-      if (data.settings) dataService.setData('settings', data.settings)
-
-      await dataService.save()
-      success('数据导入成功！')
-      loadStats()
+      await post('/api/data/import', { data })
+      success('业务数据导入成功！')
+      window.location.reload()
     } catch (err) {
       error(`导入失败：${err.message}`)
     }
@@ -1072,9 +1071,7 @@ const loadBackups = async () => {
 const createBackup = async () => {
   creatingBackup.value = true
   try {
-    await dataService.load()
-    const data = dataService.getData()
-    const result = await post('/api/data/backup', data)
+    const result = await post('/api/data/backup', {})
     if (result.success) {
       success(`备份创建成功：${result.backup_name}`)
       await loadBackups()
@@ -1092,7 +1089,7 @@ const createBackup = async () => {
 const restoreBackup = async (backup) => {
   const confirmed = await confirm({
     title: '恢复备份确认',
-    message: `确定要恢复备份 "${backup.name}" 吗？当前数据将被覆盖，此操作不可撤销。`,
+    message: `确定要恢复备份 "${backup.name}" 吗？将覆盖备份中包含的业务数据；附件文件、打印历史和提交链接不在此备份范围内。`,
     type: 'warning'
   })
   if (!confirmed) return
@@ -1101,19 +1098,9 @@ const restoreBackup = async (backup) => {
   restoreTarget.value = backup.name
   try {
     const result = await post('/api/data/restore', { backup_name: backup.name })
-    if (result.success && result.data) {
-      const data = result.data
-      await dataService.load()
-      if (data.projects) dataService.setData('projects', data.projects)
-      if (data.organizations) dataService.setData('organizations', data.organizations)
-      if (data.players) dataService.setData('players', data.players)
-      if (data.finances) dataService.setData('finances', data.finances)
-      if (data.knowledge) dataService.setData('knowledge', data.knowledge)
-      if (data.settings) dataService.setData('settings', data.settings)
-      await dataService.save()
-      success('备份恢复成功！')
-      await loadStats()
-      showBackup.value = false
+    if (result.success) {
+      success('备份中的业务数据已恢复！')
+      window.location.reload()
     } else {
       error(result.message || '恢复备份失败')
     }
@@ -1262,17 +1249,8 @@ const executeExport = () => {
 
 const exportDataJSON = async () => {
   try {
-    await dataService.load()
-    const data = dataService.getData()
-    const exportPayload = {
-      projects: data.projects || [],
-      organizations: data.organizations || [],
-      players: data.players || [],
-      finances: data.finances || [],
-      knowledge: data.knowledge || {},
-      settings: data.settings || {},
-      exportDate: new Date().toISOString()
-    }
+    const result = await get('/api/data/export')
+    const exportPayload = { ...result.data, exportDate: new Date().toISOString() }
 
     const jsonStr = JSON.stringify(exportPayload, null, 2)
     const blob = new Blob([jsonStr], { type: 'application/json' })
@@ -2115,6 +2093,18 @@ const exportDataCSV = async () => {
   color: var(--warning, #f59e0b);
 }
 
+/* 自动备份：中性色（系统产生，不用特别关注）
+   手动备份：强调色（用户自己建的，不会被自动清理） */
+.backup-badge.badge-auto {
+  background: var(--bg-tertiary, #f3f4f6);
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.backup-badge.badge-manual {
+  background: var(--accent-light, rgba(59, 130, 246, 0.12));
+  color: var(--accent, #3b82f6);
+}
+
 .backup-actions {
   display: flex;
   gap: 6px;
@@ -2262,4 +2252,6 @@ const exportDataCSV = async () => {
 [data-theme="dark"] .sync-recommendation.warning { background: rgba(245, 158, 11, 0.1); }
 [data-theme="dark"] .backup-badge { background: rgba(16, 185, 129, 0.15); }
 [data-theme="dark"] .backup-badge.badge-warning { background: rgba(245, 158, 11, 0.15); }
+[data-theme="dark"] .backup-badge.badge-auto { background: rgba(255, 255, 255, 0.06); color: var(--text-tertiary, #9ca3af); }
+[data-theme="dark"] .backup-badge.badge-manual { background: rgba(59, 130, 246, 0.18); color: #93c5fd; }
 </style>

@@ -23,9 +23,28 @@ export async function uploadBackground(file) {
   return data
 }
 
-/** 批量生成可打印 HTML（certNumbers: [{certNumber, sessionId}]） */
-export function generatePrint(payload) {
-  return post('/api/print/generate', payload)
+/** 按本次模板和证书范围检查，返回逐证书问题及本次检查凭证。 */
+export function validatePrint(payload) {
+  return post('/api/print/validate', payload)
+}
+
+/** 单份实际排版预览，复用本批检查结果；不生成打印记录。 */
+export function previewPrint(payload) {
+  return post('/api/print/preview', payload)
+}
+
+/** 批量生成；保留 409 状态，便于界面重新检查已变化的证书或模板。 */
+export async function generatePrint(payload) {
+  const response = await fetchWithAuth('/api/print/generate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  })
+  const result = await response.json()
+  if (!response.ok) {
+    const error = new Error(result.message || `生成失败 (${response.status})`)
+    error.status = response.status
+    throw error
+  }
+  return result
 }
 
 /** 生成即归档 + 写留痕（后端已落 print_logs，这里只管提交） */

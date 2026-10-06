@@ -13,6 +13,14 @@ export const useChecklistStore = defineStore('checklist', () => {
   const currentProject = ref('')
   const loading = ref(false)
   const error = ref(null)
+  let revision = null
+  let operationQueue = Promise.resolve()
+
+  const enqueue = (operation) => {
+    const result = operationQueue.then(operation)
+    operationQueue = result.catch(() => {})
+    return result
+  }
 
   // ========== 计算属性 ==========
 
@@ -58,12 +66,14 @@ export const useChecklistStore = defineStore('checklist', () => {
    * 从 dataService 加载清单数据（按项目组织）
    * 兼容旧版「按 tab 平铺」格式：识别到旧结构时整体迁移到 GLOBAL_KEY。
    */
-  const loadChecklists = async () => {
+  const readChecklists = async () => {
     loading.value = true
     error.value = null
     try {
       await dataService.load()
       let saved = dataService.getData('projectChecklists')
+      revision = dataService.getRevision('projectChecklists')
+      if (!revision) throw new Error('没有读取清单数据的权限')
 
       // 兼容迁移：旧版清单是 { tabKey: {...} } 的平铺结构（键为 startup/registration…）
       if ((!saved || typeof saved !== 'object' || Array.isArray(saved) || Object.keys(saved).length === 0)
@@ -87,28 +97,50 @@ export const useChecklistStore = defineStore('checklist', () => {
       // 当前选中的项目也确保存在
       if (currentProject.value) ensureProject(currentProject.value)
     } catch (e) {
+      revision = null
       console.error('加载清单数据失败:', e)
       error.value = e.message
       checklists.value = {}
       ensureProject(GLOBAL_KEY)
+      throw e
     } finally {
       loading.value = false
     }
   }
 
+  const loadChecklists = () => enqueue(readChecklists)
+
   /**
    * 持久化清单数据到 dataService（按项目组织的完整结构）
    */
-  const persistChecklists = async () => {
-    try {
-      ensureProject(currentKey.value)
-      dataService.setData('projectChecklists', checklists.value)
-      await dataService.save()
-    } catch (e) {
-      console.error('保存清单数据失败:', e)
-      error.value = e.message
-    }
+  const writeChecklists = async () => {
+    dataService.setData('projectChecklists', checklists.value, revision)
+    const result = await dataService.save()
+    revision = result._revisions.projectChecklists
   }
+
+  // 连续点击在同一队列内完成“修改 + 保存”，下一次只使用上一次成功后的版本。
+  const mutate = (change) => enqueue(async () => {
+    if (!revision) await readChecklists()
+    const before = JSON.parse(JSON.stringify(checklists.value))
+    loading.value = true
+    error.value = null
+    try {
+      const result = change()
+      if (result === false) return false
+      await writeChecklists()
+      return result
+    } catch (e) {
+      checklists.value = before
+      revision = null
+      error.value = e.message
+      throw e
+    } finally {
+      loading.value = false
+    }
+  })
+
+  const persistChecklists = () => mutate(() => { ensureProject(currentKey.value) })
 
   /**
    * 切换某个检查项的勾选状态
@@ -116,14 +148,14 @@ export const useChecklistStore = defineStore('checklist', () => {
    * @param {number} itemIndex - 项目索引
    */
   const toggleItem = async (cardId, itemIndex) => {
-    const map = ensureProject(currentKey.value)
-    const tab = map[activeTab.value]
-    if (!tab) return
-    const card = tab.cards.find(c => c.id === cardId)
-    if (card && card.items[itemIndex] !== undefined) {
+    const key = currentKey.value
+    const tabKey = activeTab.value
+    return mutate(() => {
+      const card = ensureProject(key)[tabKey]?.cards.find(c => c.id === cardId)
+      if (!card || card.items[itemIndex] === undefined) return false
       card.items[itemIndex].checked = !card.items[itemIndex].checked
-      await persistChecklists()
-    }
+      return true
+    })
   }
 
   /**
@@ -131,17 +163,17 @@ export const useChecklistStore = defineStore('checklist', () => {
    * @param {string|null} tabKey - 指定 Tab 重置，null 则重置当前项目全部 Tab
    */
   const resetChecklist = async (tabKey = null) => {
-    const map = ensureProject(currentKey.value)
-    const tabs = tabKey ? { [tabKey]: map[tabKey] } : map
-    for (const tabData of Object.values(tabs)) {
-      if (!tabData || !tabData.cards) continue
-      for (const card of tabData.cards) {
-        for (const item of card.items) {
-          item.checked = false
+    const key = currentKey.value
+    return mutate(() => {
+      const map = ensureProject(key)
+      const tabs = tabKey ? { [tabKey]: map[tabKey] } : map
+      for (const tabData of Object.values(tabs)) {
+        if (!tabData || !tabData.cards) continue
+        for (const card of tabData.cards) {
+          for (const item of card.items) item.checked = false
         }
       }
-    }
-    await persistChecklists()
+    })
   }
 
   /**
@@ -151,20 +183,18 @@ export const useChecklistStore = defineStore('checklist', () => {
    */
   const addItem = async (cardId, text) => {
     if (!text || !text.trim()) return false
-    const map = ensureProject(currentKey.value)
-    const tab = map[activeTab.value]
-    if (!tab) return false
-    const card = tab.cards.find(c => c.id === cardId)
-    if (card) {
+    const key = currentKey.value
+    const tabKey = activeTab.value
+    return mutate(() => {
+      const card = ensureProject(key)[tabKey]?.cards.find(c => c.id === cardId)
+      if (!card) return false
       card.items.push({
         text: text.trim(),
         checked: false,
         isCustom: true
       })
-      await persistChecklists()
       return true
-    }
-    return false
+    })
   }
 
   /**
@@ -174,16 +204,14 @@ export const useChecklistStore = defineStore('checklist', () => {
    * @returns {boolean} 是否删除成功
    */
   const removeItem = async (cardId, itemIndex) => {
-    const map = ensureProject(currentKey.value)
-    const tab = map[activeTab.value]
-    if (!tab) return false
-    const card = tab.cards.find(c => c.id === cardId)
-    if (card && card.items[itemIndex] !== undefined) {
+    const key = currentKey.value
+    const tabKey = activeTab.value
+    return mutate(() => {
+      const card = ensureProject(key)[tabKey]?.cards.find(c => c.id === cardId)
+      if (!card || card.items[itemIndex] === undefined) return false
       card.items.splice(itemIndex, 1)
-      await persistChecklists()
       return true
-    }
-    return false
+    })
   }
 
   /**

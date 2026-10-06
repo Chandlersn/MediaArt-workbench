@@ -10,6 +10,11 @@ const checklistStore = useChecklistStore()
 const projectStore = useProjectStore()
 const { alert } = useConfirmDialog()
 
+// Store 负责回滚并保留错误；页面捕获拒绝，错误在清单上方持续显示。
+const runChange = async (operation) => {
+  try { return await operation() } catch { return false }
+}
+
 const newItems = ref({})  // cardId -> input text
 const showResetConfirm = ref(false)
 const resetTarget = ref(null)  // null = all, or tab key
@@ -45,14 +50,14 @@ const handleSwitchTab = (tab) => {
 
 // 切换检查项
 const handleToggle = async (cardId, itemIndex) => {
-  await checklistStore.toggleItem(cardId, itemIndex)
+  await runChange(() => checklistStore.toggleItem(cardId, itemIndex))
 }
 
 // 添加自定义项
 const handleAddItem = async (cardId) => {
   const text = newItems.value[cardId]?.trim()
   if (!text) return
-  const ok = await checklistStore.addItem(cardId, text)
+  const ok = await runChange(() => checklistStore.addItem(cardId, text))
   if (ok) {
     newItems.value[cardId] = ''
   }
@@ -67,7 +72,7 @@ const handleAddItemKeydown = (e, cardId) => {
 
 // 删除任意项（默认项与新加项均可删）
 const handleRemoveItem = async (cardId, itemIndex) => {
-  const ok = await checklistStore.removeItem(cardId, itemIndex)
+  const ok = await runChange(() => checklistStore.removeItem(cardId, itemIndex))
   if (!ok) {
     alert({ title: '删除失败', message: '删除失败，请重试', type: 'danger' })
   }
@@ -80,7 +85,8 @@ const handleReset = (tabKey = null) => {
 }
 
 const confirmReset = async () => {
-  await checklistStore.resetChecklist(resetTarget.value)
+  const result = await runChange(() => checklistStore.resetChecklist(resetTarget.value))
+  if (result === false) return
   showResetConfirm.value = false
   resetTarget.value = null
 }
@@ -97,19 +103,19 @@ const handleProjectChange = (projectId) => {
 }
 
 onMounted(async () => {
-  await Promise.all([
+  await runChange(() => Promise.all([
     checklistStore.loadChecklists(),
     projectStore.loadProjects()
-  ])
+  ]))
   // 下拉框与 store 当前项目保持同步（store 跨页面保活）
   selectedProject.value = checklistStore.currentProject
 })
 
 onActivated(async () => {
-  await Promise.all([
+  await runChange(() => Promise.all([
     checklistStore.loadChecklists(),
     projectStore.loadProjects()
-  ])
+  ]))
   selectedProject.value = checklistStore.currentProject
 })
 </script>
@@ -127,11 +133,15 @@ onActivated(async () => {
             {{ proj.name }}
           </option>
         </CustomSelect>
-        <button class="btn btn-secondary" @click="handleReset()">
+        <button class="btn btn-secondary" :disabled="checklistStore.loading" @click="handleReset()">
           重置清单
         </button>
       </template>
     </PageHeader>
+
+    <p v-if="checklistStore.error" class="save-error" role="alert">
+      {{ checklistStore.error }}；本次操作未保存，请重试或刷新页面。
+    </p>
 
     <!-- Tab 切换 -->
     <div class="checklist-tabs">
@@ -185,6 +195,7 @@ onActivated(async () => {
             >
               <input
                 type="checkbox"
+                :disabled="checklistStore.loading"
                 :checked="item.checked"
                 @change="handleToggle(card.id, index)"
               />
@@ -192,6 +203,7 @@ onActivated(async () => {
               <button
                 class="item-delete-btn"
                 title="删除此项"
+                :disabled="checklistStore.loading"
                 @click.prevent="handleRemoveItem(card.id, index)"
               >
                 &times;
@@ -210,6 +222,7 @@ onActivated(async () => {
             />
             <button
               class="add-item-btn"
+              :disabled="checklistStore.loading"
               @click="handleAddItem(card.id)"
             >
               +
@@ -233,7 +246,7 @@ onActivated(async () => {
             </div>
             <div class="modal-footer">
               <button class="btn-secondary" @click="cancelReset">取消</button>
-              <button class="btn-danger" @click="confirmReset">确认重置</button>
+              <button class="btn-danger" :disabled="checklistStore.loading" @click="confirmReset">确认重置</button>
             </div>
           </div>
         </div>
@@ -247,6 +260,8 @@ onActivated(async () => {
   max-width: 900px;
   margin: 0 auto;
 }
+
+.save-error { color: var(--danger, #c0392b); margin: 0 0 16px; }
 
 /* ===== Tab 切换 ===== */
 .checklist-tabs {

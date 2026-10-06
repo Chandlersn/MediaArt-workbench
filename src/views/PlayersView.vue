@@ -107,9 +107,7 @@
           </div>
           <div v-if="importStep === 2">
             <p style="margin-bottom: 12px;">第二步：选择CSV文件</p>
-            <input type="file" ref="importFileInput" accept=".csv" @change="handleImportFileSelect" style="display:none;" />
-            <button class="btn-secondary" @click="importFileInput?.click()">选择文件</button>
-            <span v-if="importFile" style="margin-left: 12px;">{{ importFile.name }}</span>
+            <FileDropArea accept=".csv" :file-name="importFile?.name" @change="handleImportFileSelect" />
             <div style="margin-top: 16px; display: flex; gap: 8px;">
               <button class="btn-secondary" @click="importStep = 1">上一步</button>
               <button class="btn-primary" @click="previewImport" :disabled="!importFile">预览</button>
@@ -179,113 +177,15 @@ const loading = ref(false)
 const showImportModal = ref(false)
 const importStep = ref(1)
 const importFile = ref(null)
-const importFileInput = ref(null)
 const importPreview = ref([])
 const importHeaders = ref([])
 const importResult = ref({ imported: 0, failed: 0, errors: [] })
 const selectedIds = ref(new Set())
 
 const computeMissingMaterials = async (playerList) => {
-  if (!dataService.isLoaded()) {
-    await dataService.load()
-  }
-
-  const config = dataService.getData('config') || {}
-  const stageMaterials = config.stageMaterials || {}
-  const materialTypes = dataService.getData('materialTypes') || []
-
-  let pageMissing = 0
-
-  for (const player of playerList) {
-    const currentStage = player.stage
-    const requiredTypes = stageMaterials[currentStage] || []
-
-    if (requiredTypes.length === 0) {
-      player.missingMaterials = false
-      player.missingCount = 0
-      player.missingTypes = []
-      continue
-    }
-
-    const applicableTypes = requiredTypes.filter(typeName => {
-      const mt = materialTypes.find(t => t.name === typeName)
-      if (!mt) return true
-      if (!mt.orgId) return true
-      return mt.orgId === player.orgId
-    })
-
-    if (applicableTypes.length === 0) {
-      player.missingMaterials = false
-      player.missingCount = 0
-      player.missingTypes = []
-      continue
-    }
-
-    let uploadedTypes = []
-    const stageHistory = player.stageHistory
-    const history = Array.isArray(stageHistory) ? stageHistory :
-      (Array.isArray(player.history) ? player.history : [])
-    const currentStageHistory = history.find(h => h.stage === currentStage)
-    if (currentStageHistory && currentStageHistory.materials) {
-      uploadedTypes = currentStageHistory.materials.map(m => m.type)
-    } else if (player.materials && player.materials.length > 0) {
-      uploadedTypes = player.materials.map(m => m.type)
-    }
-
-    const missingTypes = applicableTypes.filter(type => !uploadedTypes.includes(type))
-
-    if (missingTypes.length > 0) {
-      player.missingMaterials = true
-      player.missingCount = missingTypes.length
-      player.missingTypes = missingTypes
-      pageMissing++
-    } else {
-      player.missingMaterials = false
-      player.missingCount = 0
-      player.missingTypes = []
-    }
-  }
-
-  return pageMissing
-}
-
-const computeAllMissingCount = () => {
-  const allP = dataService.getData('players') || []
-  const config = dataService.getData('config') || {}
-  const stageMaterials = config.stageMaterials || {}
-  const materialTypes = dataService.getData('materialTypes') || []
-
-  let total = 0
-
-  for (const player of allP) {
-    const currentStage = player.stage
-    const requiredTypes = stageMaterials[currentStage] || []
-    if (requiredTypes.length === 0) continue
-
-    const applicableTypes = requiredTypes.filter(typeName => {
-      const mt = materialTypes.find(t => t.name === typeName)
-      if (!mt) return true
-      if (!mt.orgId) return true
-      return mt.orgId === player.orgId
-    })
-    if (applicableTypes.length === 0) continue
-
-    let uploadedTypes = []
-    const stageHistory = player.stageHistory
-    const history = Array.isArray(stageHistory) ? stageHistory :
-      (Array.isArray(player.history) ? player.history : [])
-    const currentStageHistory = history.find(h => h.stage === currentStage)
-    if (currentStageHistory && currentStageHistory.materials) {
-      uploadedTypes = currentStageHistory.materials.map(m => m.type)
-    } else if (player.materials && player.materials.length > 0) {
-      uploadedTypes = player.materials.map(m => m.type)
-    }
-
-    const missingTypes = applicableTypes.filter(type => !uploadedTypes.includes(type))
-    if (missingTypes.length > 0) total++
-  }
-
-  return total
+  await dataService.load()
+  await Promise.all(playerList.map(player => playerStore.refreshPlayerMaterials(player)))
+  return playerList.filter(player => player.missingMaterials).length
 }
 
 const filteredAllPlayers = computed(() => {
@@ -323,8 +223,7 @@ const loadPlayers = async () => {
     if (result.success) {
       allPlayers.value = result.data
 
-      await computeMissingMaterials(allPlayers.value)
-      missingMaterialsTotal.value = computeAllMissingCount()
+      missingMaterialsTotal.value = await computeMissingMaterials(allPlayers.value)
     }
   } catch (e) {
     console.error('加载选手失败:', e)
@@ -421,7 +320,7 @@ const executeImport = async () => {
     importResult.value = result
     importStep.value = 4
     if (result.success && result.imported > 0) {
-      await playerStore.loadPlayers()
+      await loadPlayers()
     }
   } catch (e) {
     console.error('导入失败:', e)
@@ -437,7 +336,6 @@ const closeImportModal = () => {
   importPreview.value = []
   importHeaders.value = []
   importResult.value = { imported: 0, failed: 0, errors: [] }
-  if (importFileInput.value) importFileInput.value.value = ''
 }
 
 const isAllSelected = computed(() => {
@@ -482,6 +380,7 @@ const batchDelete = async () => {
     await playerStore.deletePlayer(id)
   }
   selectedIds.value = new Set()
+  await loadPlayers()
 }
 </script>
 

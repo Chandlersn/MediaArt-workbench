@@ -1,196 +1,90 @@
-/**
- * 测试运行器
- * 简单的测试框架，用于运行单元测试和集成测试
- */
+﻿/** 顺序执行测试，支持异步用例、嵌套钩子，并将加载失败计入结果。 */
+import fs from 'node:fs'
+import path from 'node:path'
+import assert from 'node:assert/strict'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+const testDir = path.dirname(fileURLToPath(import.meta.url))
+const root = { name: '', parent: null, before: [], after: [], entries: [] }
+let currentSuite = root
+const stats = { total: 0, passed: 0, failed: 0 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+Object.assign(globalThis, {
+  assert,
+  assertEqual: assert.strictEqual,
+  assertDeepEqual: assert.deepStrictEqual,
+  assertThrows: assert.throws,
+  describe(name, fn) {
+    const suite = { name, parent: currentSuite, before: [], after: [], entries: [] }
+    currentSuite.entries.push(suite)
+    currentSuite = suite
+    try { fn() } finally { currentSuite = suite.parent }
+  },
+  it(name, fn) { currentSuite.entries.push({ name, fn }) },
+  beforeEach(fn) { currentSuite.before.push(fn) },
+  afterEach(fn) { currentSuite.after.push(fn) }
+})
 
-// 测试统计
-const stats = {
-  total: 0,
-  passed: 0,
-  failed: 0,
-  errors: []
-};
-
-// 简单的断言函数
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(`Assertion failed: ${message}`);
-  }
+function collect(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory() && !entry.name.startsWith('.')) return collect(full)
+    return entry.isFile() && entry.name.endsWith('.test.js') ? [full] : []
+  }).sort()
 }
 
-function assertEqual(actual, expected, message) {
-  if (actual !== expected) {
-    throw new Error(`Expected ${expected}, got ${actual}${message ? ': ' + message : ''}`);
-  }
-}
-
-function assertDeepEqual(actual, expected, message) {
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}${message ? ': ' + message : ''}`);
-  }
-}
-
-function assertThrows(fn, message) {
+async function invoke(fn) {
+  let timer
   try {
-    fn();
-    throw new Error(`Expected function to throw, but it didn't${message ? ': ' + message : ''}`);
-  } catch (e) {
-    if (e.message.includes('Expected function to throw')) {
-      throw e;
-    }
-  }
+    await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('测试执行超过 15 秒')), 15000) })
+    ])
+  } finally { clearTimeout(timer) }
 }
 
-// 全局断言
-global.assert = assert;
-global.assertEqual = assertEqual;
-global.assertDeepEqual = assertDeepEqual;
-global.assertThrows = assertThrows;
-global.describe = describe;
-global.it = it;
-global.beforeEach = beforeEach;
-global.afterEach = afterEach;
-
-/**
- * 描述测试套件
- */
-function describe(name, fn) {
-  console.log(`\n${name}`);
-  fn();
-}
-
-/**
- * 定义测试用例
- */
-function it(name, fn) {
-  stats.total++;
-  const startTime = Date.now();
-
-  try {
-    fn();
-    const duration = Date.now() - startTime;
-    stats.passed++;
-    console.log(`  ✓ ${name} (${duration}ms)`);
-  } catch (e) {
-    stats.failed++;
-    stats.errors.push({ name, error: e });
-    console.log(`  ✗ ${name}`);
-    console.log(`    Error: ${e.message}`);
-  }
-}
-
-/**
- * beforeEach 钩子
- */
-let currentBeforeEach = null;
-function beforeEach(fn) {
-  currentBeforeEach = fn;
-}
-
-/**
- * afterEach 钩子
- */
-let currentAfterEach = null;
-function afterEach(fn) {
-  currentAfterEach = fn;
-}
-
-/**
- * 将 Windows 路径转换为 file:// URL
- */
-function pathToFileURL(filepath) {
-  return 'file:///' + filepath.replace(/\\/g, '/');
-}
-
-/**
- * 运行测试文件
- */
-async function runTestFile(filePath) {
-  console.log(`\n--- Running ${filePath} ---`);
-
-  try {
-    const fileUrl = pathToFileURL(path.resolve(filePath));
-    const mod = await import(fileUrl);
-    return mod;
-  } catch (e) {
-    console.error(`Failed to load ${filePath}: ${e.message}`);
-    return null;
-  }
-}
-
-/**
- * 收集所有测试文件
- */
-function collectTestFiles(dir) {
-  const files = [];
-
-  try {
-    const items = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const item of items) {
-      const fullPath = path.join(dir, item.name);
-
-      if (item.isDirectory() && !item.name.startsWith('.')) {
-        files.push(...collectTestFiles(fullPath));
-      } else if (item.name.endsWith('.test.js')) {
-        files.push(fullPath);
+async function runSuite(suite, parents = []) {
+  const chain = [...parents, suite]
+  for (const item of suite.entries) {
+    if (!item.fn) { await runSuite(item, chain); continue }
+    stats.total++
+    const name = [...chain.map(s => s.name).filter(Boolean), item.name].join(' > ')
+    let failure
+    try {
+      for (const s of chain) for (const hook of s.before) await invoke(hook)
+      await invoke(item.fn)
+    } catch (error) { failure = error }
+    finally {
+      for (const s of [...chain].reverse()) {
+        for (const hook of s.after) {
+          try { await invoke(hook) } catch (error) { failure ||= error }
+        }
       }
     }
-  } catch (e) {
-    console.error(`Error reading directory ${dir}: ${e.message}`);
-  }
-
-  return files;
-}
-
-/**
- * 打印测试结果
- */
-function printResults() {
-  console.log('\n========================================');
-  console.log('Test Results');
-  console.log('========================================');
-  console.log(`Total:  ${stats.total}`);
-  console.log(`Passed: ${stats.passed}`);
-  console.log(`Failed: ${stats.failed}`);
-  console.log('========================================\n');
-
-  if (stats.failed > 0) {
-    console.log('Failed Tests:');
-    stats.errors.forEach(({ name, error }) => {
-      console.log(`  - ${name}`);
-      console.log(`    ${error.message}`);
-    });
-    console.log('');
+    if (failure) {
+      stats.failed++
+      console.error(`✗ ${name}\n  ${failure.stack || failure}`)
+    } else {
+      stats.passed++
+      console.log(`✓ ${name}`)
+    }
   }
 }
 
-/**
- * 主函数
- */
-async function main() {
-  const testDir = path.join(__dirname);
-  const testFiles = collectTestFiles(testDir);
-
-  console.log(`Found ${testFiles.length} test files`);
-
-  for (const file of testFiles) {
-    await runTestFile(file);
-  }
-
-  printResults();
-
-  process.exit(stats.failed > 0 ? 1 : 0);
+const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'))
+const files = args.length ? args.map(file => path.resolve(file)) : collect(testDir)
+for (const file of files) {
+  const suite = { name: path.relative(testDir, file), parent: root, before: [], after: [], entries: [] }
+  root.entries.push(suite)
+  currentSuite = suite
+  try { await import(pathToFileURL(file).href) }
+  catch (error) {
+    stats.total++
+    stats.failed++
+    console.error(`无法加载 ${file}: ${error.stack || error}`)
+  } finally { currentSuite = root }
 }
-
-main().catch(e => {
-  console.error('Test runner error:', e);
-  process.exit(1);
-});
+await runSuite(root)
+console.log(`Total: ${stats.total}  Passed: ${stats.passed}  Failed: ${stats.failed}`)
+if (!files.length) { console.error('没有找到测试文件'); process.exitCode = 1 }
+else process.exitCode = stats.failed ? 1 : 0

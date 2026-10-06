@@ -7,19 +7,49 @@ export const useOrganizationStore = defineStore('organization', () => {
   const organizations = ref([])
   const currentOrganization = ref(null)
   const loading = ref(false)
+  const loaded = ref(false)
+  let revision = null
   const error = ref(null)
+  let mutationQueue = Promise.resolve()
+  const mutate = operation => {
+    const result = mutationQueue.then(operation)
+    mutationQueue = result.catch(() => {})
+    return result
+  }
 
-  const loadOrganizations = async () => {
+  const readOrganizations = async () => {
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
       await dataService.load()
       organizations.value = dataService.getData('organizations') || []
+      revision = dataService.getRevision('organizations')
+      loaded.value = true
+      return true
     } catch (e) {
       console.error('加载机构失败:', e)
       error.value = e.message
+      return false
     } finally {
       loading.value = false
+    }
+  }
+
+  const loadOrganizations = () => mutate(readOrganizations)
+
+  const ensureLoaded = async () => {
+    if (!loaded.value) await readOrganizations()
+    if (!loaded.value) throw new Error(error.value || '数据加载失败，无法保存，请重试')
+  }
+
+  const persist = async candidate => {
+    dataService.setData('organizations', candidate, revision)
+    const result = await dataService.save()
+    revision = result._revisions?.organizations ?? revision
+    organizations.value = candidate
+    if (currentOrganization.value) {
+      currentOrganization.value = organizations.value.find(o => o.id === currentOrganization.value.id) || null
     }
   }
 
@@ -32,16 +62,13 @@ export const useOrganizationStore = defineStore('organization', () => {
     currentOrganization.value = org
   }
 
-  const addOrganization = async (orgData) => {
+  const addOrganization = orgData => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
-      orgData.id = `o${Date.now()}`
-      orgData.createdAt = new Date().toISOString()
-      organizations.value.push(orgData)
-
-      dataService.setData('organizations', organizations.value)
-      await dataService.save()
+      const record = { ...orgData, id: `o${Date.now()}`, createdAt: new Date().toISOString() }
+      await persist([...organizations.value, record])
 
       try {
         const auditStore = useAuditLogStore()
@@ -55,7 +82,7 @@ export const useOrganizationStore = defineStore('organization', () => {
         console.warn('记录审计日志失败:', e)
       }
 
-      return orgData
+      return record
     } catch (e) {
       console.error('添加机构失败:', e)
       error.value = e.message
@@ -63,23 +90,23 @@ export const useOrganizationStore = defineStore('organization', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
-  const updateOrganization = async (id, orgData) => {
+  const updateOrganization = (id, orgData) => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const index = organizations.value.findIndex(o => o.id == id)
-      if (index !== -1) {
-        organizations.value[index] = {
-          ...organizations.value[index],
-          ...orgData,
-          updatedAt: new Date().toISOString()
-        }
+      if (index === -1) throw new Error('机构不存在，请刷新后重试')
+      const candidate = [...organizations.value]
+      candidate[index] = {
+        ...organizations.value[index],
+        ...orgData,
+        updatedAt: new Date().toISOString()
       }
 
-      dataService.setData('organizations', organizations.value)
-      await dataService.save()
+      await persist(candidate)
 
       try {
         const auditStore = useAuditLogStore()
@@ -101,7 +128,7 @@ export const useOrganizationStore = defineStore('organization', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const saveOrganization = async (orgData) => {
     if (orgData.id) {
@@ -111,16 +138,13 @@ export const useOrganizationStore = defineStore('organization', () => {
     }
   }
 
-  const deleteOrganization = async (id) => {
+  const deleteOrganization = id => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const org = organizations.value.find(o => o.id === id)
-      organizations.value = organizations.value.filter(o => o.id !== id)
-      if (currentOrganization.value?.id === id) currentOrganization.value = null
-
-      dataService.setData('organizations', organizations.value)
-      await dataService.save()
+      await persist(organizations.value.filter(o => o.id !== id))
 
       try {
         const auditStore = useAuditLogStore()
@@ -140,7 +164,7 @@ export const useOrganizationStore = defineStore('organization', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const getOrgStats = () => {
     return { total: organizations.value.length }
@@ -150,6 +174,7 @@ export const useOrganizationStore = defineStore('organization', () => {
     organizations,
     currentOrganization,
     loading,
+    loaded,
     error,
     loadOrganizations,
     getOrgById,

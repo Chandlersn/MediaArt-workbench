@@ -6,8 +6,10 @@ SQLite 数据库连接与 ORM 模块
 
 import os
 import json
+import hashlib
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,12 +23,34 @@ SCHEMA_FILE = os.path.join(os.path.dirname(__file__), 'schema.sql')
 # 线程本地存储，用于多线程环境
 _local = threading.local()
 
+# HTTP routes and backup restoration share this definition. Authentication and
+# permissions remain the responsibility of the caller.
+WRITABLE_SECTIONS = frozenset({
+    'projects', 'organizations', 'players', 'finances', 'users', 'config',
+    'materialTypes', 'knowledge', 'notifications', 'templates', 'auditLogs',
+    'checklistState', 'checklists', 'certificates', 'certSettings',
+    'printTemplates', 'projectChecklists', 'archiveConfig', 'archiveMappings',
+})
+CONFIG_KEYS = frozenset({
+    'stages', 'projectTypes', 'orgTypes', 'statusList', 'financeTypes',
+    'incomeCategories', 'expenseCategories', 'stageMaterials', 'resourceCategories',
+})
+
+
+class SnapshotConflictError(Exception):
+    """The caller edited a section that has changed since it was loaded."""
+
+    def __init__(self, sections):
+        self.sections = sorted(sections)
+        super().__init__('数据已被其他操作修改，请重新加载：' + ', '.join(self.sections))
+
 
 class Database:
     """SQLite 数据库管理类"""
 
-    def __init__(self, db_path: str = DB_FILE):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        self.db_path = os.path.abspath(db_path or DB_FILE)
+        self._connection_key = os.path.normcase(os.path.realpath(self.db_path))
         self._ensure_db_dir()
         self._init_db()
 
@@ -50,36 +74,60 @@ class Database:
         with open(SCHEMA_FILE, 'r', encoding='utf-8') as f:
             schema_sql = f.read()
 
-        with self.get_connection() as conn:
-            conn.executescript(schema_sql)
-            print(f"数据库表结构已创建: {self.db_path}")
+        self.execute_script(schema_sql)
+        print(f"数据库表结构已创建: {self.db_path}")
+
+    def execute_script(self, script):
+        """执行建表脚本而不触发 sqlite3.executescript 的隐式提交。"""
+        with self.transaction() as conn:
+            start = 0
+            for index, character in enumerate(script):
+                if character == ';' and sqlite3.complete_statement(script[start:index + 1]):
+                    conn.execute(script[start:index + 1])
+                    start = index + 1
+            if script[start:].strip():
+                conn.execute(script[start:])
 
     def get_connection(self) -> sqlite3.Connection:
         """获取数据库连接（线程安全）"""
-        if not hasattr(_local, 'connection') or _local.connection is None:
+        if not hasattr(_local, 'connections'):
+            _local.connections = {}
+        if self._connection_key not in _local.connections:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row  # 使用 Row 工厂，支持字典式访问
             conn.execute("PRAGMA foreign_keys = ON")  # 启用外键约束
             conn.execute("PRAGMA journal_mode = WAL")  # 使用 WAL 模式提高并发性能
-            _local.connection = conn
-        return _local.connection
+            _local.connections[self._connection_key] = conn
+        return _local.connections[self._connection_key]
 
     def close_connection(self):
         """关闭数据库连接"""
-        if hasattr(_local, 'connection') and _local.connection:
-            _local.connection.close()
-            _local.connection = None
+        conn = getattr(_local, 'connections', {}).pop(self._connection_key, None)
+        if conn is not None:
+            conn.close()
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, immediate=False):
         """事务上下文管理器"""
         conn = self.get_connection()
+        savepoint = 'sp_' + uuid.uuid4().hex if conn.in_transaction else None
         try:
+            if savepoint:
+                conn.execute(f'SAVEPOINT {savepoint}')
+            else:
+                conn.execute('BEGIN IMMEDIATE' if immediate else 'BEGIN')
             yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
+            if savepoint:
+                conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+            else:
+                conn.commit()
+        except Exception:
+            if savepoint and conn.in_transaction:
+                conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
+                conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+            elif not savepoint:
+                conn.rollback()
+            raise
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """执行 SQL 语句（**不自动提交**）。
@@ -448,8 +496,7 @@ class DataStore:
         CREATE INDEX IF NOT EXISTS idx_certificates_award ON certificates(award);
         CREATE INDEX IF NOT EXISTS idx_certificates_cert_round ON certificates(cert_round);
         """
-        with self.db.transaction() as conn:
-            conn.executescript(ddl)
+        self.db.execute_script(ddl)
 
     def _migrate_certificates_to_session_pk(self):
         """把既有「单主键 cert_number」的证书表迁移为复合主键 (cert_number, session_id)。
@@ -574,78 +621,158 @@ class DataStore:
         except Exception as e:
             print(f"[DB] users 表字段迁移失败（可忽略，不影响既有字段）: {e}")
 
-    def load_all_data(self) -> Dict:
-        """加载所有数据（兼容 JSON 格式）"""
-        import time
-        start = time.time()
+    def load_all_data(self, sections=None) -> Dict:
+        """读取同一 SQLite 快照，并返回各可写数据段的并发控制版本。"""
+        with self.db.transaction():
+            data = self._read_snapshot(sections=sections)
+            data['_revisions'] = self._snapshot_revisions(data)
+            return data
 
-        def timed_load(name, fn):
-            t = time.time()
-            result = fn()
-            print(f"  [性能] 加载 {name}: {time.time() - t:.3f}秒, 数量: {len(result) if hasattr(result, '__len__') else 'N/A'}")
-            return result
-
-        data = {
-            '_version': timed_load('version', lambda: self.get_version()),
-            'projects': timed_load('projects', lambda: self.projects.get_all(order_by='created_at DESC')),
-            'organizations': timed_load('organizations', lambda: self.organizations.get_all(order_by='created_at DESC')),
-            'players': timed_load('players', lambda: self.players.get_all(order_by='created_at DESC')),
-            'finances': timed_load('finances', lambda: self.finances.get_all(order_by='date DESC')),
-            'users': timed_load('users', lambda: self.users.get_all(order_by='created_at DESC')),
-            'materialTypes': timed_load('materialTypes', lambda: self.material_types.get_all()),
-            'knowledge': timed_load('knowledge', lambda: self._load_knowledge()),
-            'config': timed_load('config', lambda: self._load_config()),
-            'archiveConfig': timed_load('archiveConfig', lambda: self._load_archive_config()),
-            'archiveMappings': timed_load('archiveMappings', lambda: self._load_archive_mappings()),
-            'checklistState': timed_load('checklistState', lambda: self._load_checklist_states()),
-            'templates': timed_load('templates', lambda: self._load_templates()),
-            'checklists': timed_load('checklists', lambda: self.checklists.get_all()),
-            'certificates': timed_load('certificates', lambda: self.certificates.get_all()),
-            'certSettings': timed_load('certSettings', lambda: self._load_cert_settings()),
-            'printTemplates': timed_load('printTemplates', lambda: self._load_print_templates()),
-            'projectChecklists': timed_load('projectChecklists', lambda: self._load_project_checklists()),
-            'auditLogs': timed_load('auditLogs', lambda: self.audit_logs.get_all(order_by='created_at DESC', limit=100)),
-            'notifications': timed_load('notifications', lambda: self.notifications.get_all(order_by='created_at DESC', limit=50)),
-            'currentUser': timed_load('currentUser', lambda: self._get_current_user())
+    def _read_snapshot(self, sections=None) -> Dict:
+        """调用方负责事务；备份保留完整审计、通知记录，不做分页截断。"""
+        loaders = {
+            '_version': self.get_version,
+            'projects': lambda: self.projects.get_all(order_by='created_at DESC'),
+            'organizations': lambda: self.organizations.get_all(order_by='created_at DESC'),
+            'players': lambda: self.players.get_all(order_by='created_at DESC'),
+            'finances': lambda: self.finances.get_all(order_by='date DESC'),
+            'users': lambda: self.users.get_all(order_by='created_at DESC'),
+            'materialTypes': self.material_types.get_all,
+            'knowledge': self._load_knowledge,
+            'config': self._load_config,
+            'archiveConfig': self._load_archive_config,
+            'archiveMappings': self._load_archive_mappings,
+            'checklistState': self._load_checklist_states,
+            'templates': self._load_templates,
+            'checklists': self.checklists.get_all,
+            'certificates': self.certificates.get_all,
+            'certSettings': self._load_cert_settings,
+            'printTemplates': self._load_print_templates,
+            'projectChecklists': self._load_project_checklists,
+            'auditLogs': lambda: self.audit_logs.get_all(order_by='created_at DESC'),
+            'notifications': lambda: self.notifications.get_all(order_by='created_at DESC'),
+            'currentUser': self._get_current_user,
         }
+        selected = set(loaders) if sections is None else set(sections)
+        if selected - set(loaders):
+            raise ValueError('读取包含未知数据段')
+        return {key: load() for key, load in loaders.items() if key in selected}
 
-        print(f"[性能] load_all_data 总耗时: {time.time() - start:.3f}秒")
-        return data
+    @staticmethod
+    def _snapshot_revisions(data: Dict) -> Dict:
+        def encode(value):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True,
+                              separators=(',', ':'), allow_nan=False)
 
-    def save_all_data(self, data: Dict) -> bool:
-        """保存所有数据（兼容 JSON 格式）
+        revisions = {}
+        for key in WRITABLE_SECTIONS.intersection(data):
+            value = data.get(key)
+            # Entity rows have no meaningful SQL order. Keep nested arrays (such
+            # as template fields and checklist items) in their original order.
+            if isinstance(value, list):
+                value = sorted(value, key=encode)
+            elif key == 'knowledge' and isinstance(value, dict):
+                value = {kind: sorted(rows, key=encode) for kind, rows in value.items()}
+            revisions[key] = hashlib.sha256(encode(value).encode('utf-8')).hexdigest()
+        return revisions
 
-        隔离与安全策略：
-        - 每张表独立 try/except：单表失败不会回滚其他表已完成的写入。
-        - "先清空再回填"的 DELETE 只在本次确实要回填该表时才执行，
-          杜绝“删了却没数据可写”导致的数据丢失。
-          （原先无条件 DELETE FROM templates / audit_logs，而这两张表没有任何
-            写入器，等于每次保存都把表清空一次。）
+    def _validate_snapshot(self, data):
+        if not isinstance(data, dict):
+            raise ValueError('保存数据必须是对象')
+        json.dumps(data, allow_nan=False)
+        list_sections = {
+            'projects', 'organizations', 'players', 'finances', 'users',
+            'materialTypes', 'notifications', 'auditLogs', 'checklists',
+            'certificates', 'printTemplates',
+        }
+        for key in WRITABLE_SECTIONS.intersection(data):
+            payload = data[key]
+            if key in list_sections:
+                self._validate_records(key, payload)
+            elif not isinstance(payload, dict):
+                raise ValueError(f'{key} 必须是对象')
+        if 'knowledge' in data:
+            for kind, rows in data['knowledge'].items():
+                if kind not in {'guide', 'troubleshoot', 'case', 'tip', 'reference',
+                                'solutions', 'practices', 'training'}:
+                    raise ValueError(f'未知知识库分类: {kind}')
+                self._validate_records('knowledge', rows)
+            ids = [self._record_identity(row['id']) for rows in data['knowledge'].values() for row in rows]
+            if len(ids) != len(set(ids)):
+                raise ValueError('知识库记录 ID 重复')
+        if 'config' in data and set(data['config']) - CONFIG_KEYS:
+            raise ValueError('config 包含不属于业务配置的数据键')
+        if 'templates' in data:
+            for key in ('categories', 'items'):
+                if key in data['templates'] and not isinstance(data['templates'][key], list):
+                    raise ValueError(f'templates.{key} 必须是数组')
+        if 'checklistState' in data:
+            if any(type(v) not in (bool, int) or v not in (0, 1)
+                   for v in data['checklistState'].values()):
+                raise ValueError('checklistState 必须使用布尔值')
 
-        ⚠️ 空表处理的区分（重要）：
-        「载荷为空」有两种含义完全不同的来源，必须靠客户端标记区分：
+    @staticmethod
+    def _record_identity(value):
+        # Historical JSON exports may use numbers for TEXT primary keys.
+        if type(value) not in (str, int, float) or not str(value).strip():
+            raise ValueError('记录缺少有效主键')
+        return str(value)
 
-          1) 异常路径：加载失败 → 内存快照为空 → 触发保存 → 会抹掉整表；
-          2) 正常操作：用户确实删掉了某张表的**最后一条**记录。
+    @staticmethod
+    def _validate_records(section, rows):
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f'{section} 必须是记录对象数组')
+        seen = set()
+        for row in rows:
+            identity = row.get('certNumber', row.get('cert_number')) if section == 'certificates' else row.get('id')
+            identity = DataStore._record_identity(identity)
+            session = row.get('sessionId', row.get('session_id', ''))
+            if section == 'certificates' and type(session) not in (str, int, float):
+                raise ValueError('证书 sessionId 必须是字符串或数字')
+            key = (identity, str(session)) if section == 'certificates' else identity
+            if key in seen:
+                raise ValueError(f'{section} 记录主键重复')
+            seen.add(key)
 
-        此前只按「载荷是否为空」判断，把 (2) 也一并挡下 —— 表现为
-        「删掉最后一条记录，接口返回成功、刷新后又出现」。
-        现在由前端在提交时带上 `_snapshot: true`（表示"这是用户正在操作的完整快照"）：
-        带标记 → 允许清空到 0 条；不带标记 → 沿用保守策略，跳过清空。
-        """
-        # 客户端声明「这是一份完整快照」时，空数组视为用户真实的清空意图
-        allow_empty = bool(data.get('_snapshot'))
+    @staticmethod
+    def _foreign_key_violations(conn):
+        """按逻辑主键识别旧孤儿；全表替换可能改变 rowid。"""
+        violations = set()
+        for table, rowid, parent, fk_id in conn.execute('PRAGMA foreign_key_check'):
+            columns = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            keys = [row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5]]
+            columns_sql = ', '.join('"' + key.replace('"', '""') + '"' for key in keys)
+            identity = conn.execute(f'SELECT {columns_sql} FROM "{table}" WHERE rowid = ?', (rowid,)).fetchone()
+            foreign_columns = [row[3] for row in conn.execute(f'PRAGMA foreign_key_list("{table}")')
+                               if row[0] == fk_id]
+            refs_sql = ', '.join('"' + key.replace('"', '""') + '"' for key in foreign_columns)
+            references = conn.execute(f'SELECT {refs_sql} FROM "{table}" WHERE rowid = ?', (rowid,)).fetchone()
+            violations.add((table, tuple(identity) if identity else rowid, parent, fk_id,
+                            tuple(references) if references else None))
+        return violations
 
-        failures = []
+    def save_all_data(self, data: Dict, revision_result: Optional[Dict] = None) -> bool:
+        """原子保存出现的数据段。HTTP 必须提供 _revisions；内部迁移可省略。"""
+        conn = self.db.get_connection()
+        if conn.in_transaction:
+            raise RuntimeError('快照保存必须拥有独立事务')
         try:
-            with self.db.transaction() as conn:
-                # 临时禁用外键约束，避免全量替换时的级联冲突
-                conn.execute("PRAGMA foreign_keys = OFF")
-
-                # (标签, 写入函数, JSON 键, 需要先清空的表)
-                # 注意：users / knowledge / material_types / notifications /
-                #      checklist_states / templates / audit_logs 的 DELETE 已下沉到
-                #      各自的 _save_* 内部；此处只为没有内建清空的表补 DELETE。
+            self._validate_snapshot(data)
+            touched_sections = WRITABLE_SECTIONS.intersection(data)
+            # Toggle only outside transactions; otherwise SQLite ignores it.
+            # This also prevents any future ON DELETE actions during replacement.
+            conn.execute('PRAGMA foreign_keys = OFF')
+            with self.db.transaction(immediate=True):
+                old_violations = self._foreign_key_violations(conn)
+                if '_revisions' in data:
+                    expected = data['_revisions']
+                    if not isinstance(expected, dict):
+                        raise ValueError('_revisions 必须是对象')
+                    current = self._snapshot_revisions(self._read_snapshot(sections=touched_sections))
+                    conflicts = [key for key in touched_sections
+                                 if expected.get(key) != current[key]]
+                    if conflicts:
+                        raise SnapshotConflictError(conflicts)
                 sections = [
                     ('printTemplates', self._save_print_templates, 'printTemplates', 'print_templates'),
                     ('projects', self._save_projects, 'projects', 'projects'),
@@ -663,82 +790,88 @@ class DataStore:
                     ('certificates', self._save_certificates, 'certificates', 'certificates'),
                     ('certSettings', self._save_cert_settings, 'certSettings', None),
                     ('projectChecklists', self._save_project_checklists, 'projectChecklists', None),
+                    ('checklists', self._save_checklists, 'checklists', 'checklists'),
+                    ('archiveConfig', self._save_archive_config, 'archiveConfig', None),
+                    ('archiveMappings', self._save_archive_mappings, 'archiveMappings', None),
                 ]
 
                 for label, save_fn, key, clear_table in sections:
                     if key not in data:
                         continue
                     payload = data[key]
-                    # 防误删（泛化自原先只保护 certificates 的写法）：凡"先清空再回填"
-                    # 的表，若本次载荷为空**且客户端未声明这是完整快照**，则不执行
-                    # 清空+回填，保留库中现有数据。
-                    # 理由：空载荷可能来自异常路径（加载失败 → 内存快照为空 → 触发
-                    # 保存 → 把库里整表抹掉，且返回 success）。但若客户端明确声明了
-                    # `_snapshot`，说明这是用户正在操作的完整快照，空数组就是"删光了"，
-                    # 必须如实落库，否则删掉最后一条记录会失败。
-                    if clear_table and not payload and not allow_empty:
-                        print(f"[SQLite] 跳过 {label} 同步：传入为空且未声明完整快照，"
-                              f"保留库中现有数据（防误删）")
+                    if clear_table and not payload and not data.get('_snapshot') and '_revisions' not in data:
                         continue
-                    try:
-                        if clear_table:
-                            conn.execute(f"DELETE FROM {clear_table}")
-                        if save_fn(payload, conn) is False:
-                            failures.append(label)
-                    except Exception as e:
-                        failures.append(label)
-                        print(f"[SQLite] 同步 {label} 失败: {e}")
-                        import traceback
-                        traceback.print_exc()
-
-                # 更新版本
+                    if clear_table:
+                        conn.execute(f"DELETE FROM {clear_table}")
+                    if save_fn(payload, conn) is False:
+                        raise ValueError(f'{label} 数据未通过校验')
+                if self._foreign_key_violations(conn) - old_violations:
+                    raise ValueError('关联校验失败：引用记录不存在，或删除的项目/机构仍被使用')
                 self._update_version(data.get('_version', '2.3'), conn)
+                saved_revisions = self._snapshot_revisions(
+                    self._read_snapshot(sections=touched_sections)) if revision_result is not None else {}
+            if revision_result is not None:
+                revision_result.update({key: saved_revisions[key]
+                                        for key in touched_sections})
+            # 标记搜索索引过期。真正的重建推迟到「数据变化后的第一次搜索」，
+            # 这样保存路径不会被索引构建拖慢。
+            try:
+                from server.search.index import mark_dirty
+                with self.db.transaction(immediate=True):
+                    mark_dirty(conn)
+            except Exception as e:
+                print(f"标记搜索索引过期失败（不影响保存）: {e}")
 
-                # 恢复外键约束
-                conn.execute("PRAGMA foreign_keys = ON")
-
-            if failures:
-                print(f"[SQLite] 同步完毕，但以下部分未能写入: {', '.join(failures)}")
-                return False
+            # 每日自动备份：跨天后的第一次保存会补一份（当天已备份则直接跳过，
+            # 内存缓存保证不会每次都去列目录）。后端长期不重启也能覆盖到。
+            try:
+                from server.config import BASE_DIR as _BASE_DIR
+                from server.database.maintenance import ensure_daily_backup
+                ensure_daily_backup(
+                    os.path.join(_BASE_DIR, 'data', 'backup'),
+                    lambda: self.load_all_data()
+                )
+            except Exception as e:
+                print(f"每日自动备份跳过（不影响保存）: {e}")
             return True
+        except SnapshotConflictError:
+            raise
         except Exception as e:
-            print(f"保存数据失败: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"保存数据失败，全部修改已回滚: {e}")
             return False
+        finally:
+            conn.execute('PRAGMA foreign_keys = ON')
 
-    # 表字段缓存（运行时动态从 PRAGMA table_info 读取，防止前端多余字段导致 INSERT 失败）
-    _table_columns_cache: Dict = {}
-
+    # 按当前连接读取 schema，避免其他数据库或恢复后的旧列缓存串库。
     def _get_table_columns(self, table_name: str, conn) -> set:
-        """动态获取表的实际列名（带缓存）"""
-        if table_name not in self._table_columns_cache:
-            cursor = conn.execute(f"PRAGMA table_info({table_name})")
-            self._table_columns_cache[table_name] = {row[1] for row in cursor.fetchall()}
-        return self._table_columns_cache[table_name]
+        """动态获取表的实际列名，过滤前端派生字段。"""
+        cursor = conn.execute(f"PRAGMA table_info({table_name})")
+        return {row[1] for row in cursor.fetchall()}
 
     def _filter_fields(self, data: Dict, allowed: set) -> Dict:
         """只保留表中实际存在的字段"""
         return {k: v for k, v in data.items() if k in allowed}
 
     def _upsert(self, table: str, data: Dict, conn, delete_first: bool = False):
-        """通用 upsert：过滤字段后执行 INSERT OR REPLACE
-
-        单条记录违反约束（NOT NULL / UNIQUE 等）时跳过该条并告警，返回 False。
-        这样一条脏数据不会把整批同步、乃至同一事务里的其他表一起拖垮。
-        """
+        """插入已清空表的记录；任何约束失败都必须由外层事务回滚。"""
         allowed = self._get_table_columns(table, conn)
         filtered = self._filter_fields(data, allowed)
         if not filtered:
-            return False
+            raise ValueError(f'{table} 记录没有可写入字段')
+        identity_fields = ('cert_number', 'session_id') if table == 'certificates' else ('id',)
+        for key in identity_fields:
+            if key in filtered and filtered[key] is not None:
+                filtered[key] = str(filtered[key])
+        if table in ('players', 'finances'):
+            for key in ('org_id', 'project_id'):
+                if filtered.get(key) == '':
+                    filtered[key] = None
+                elif filtered.get(key) is not None:
+                    filtered[key] = str(filtered[key])
         fields = ', '.join(filtered.keys())
         placeholders = ', '.join(['?' for _ in filtered])
-        try:
-            conn.execute(f"INSERT OR REPLACE INTO {table} ({fields}) VALUES ({placeholders})", tuple(filtered.values()))
-            return True
-        except sqlite3.IntegrityError as e:
-            print(f"[SQLite] 跳过不合法的 {table} 记录 id={filtered.get('id', '?')!r}: {e}")
-            return False
+        conn.execute(f"INSERT INTO {table} ({fields}) VALUES ({placeholders})", tuple(filtered.values()))
+        return True
 
     def _save_projects(self, projects, conn):
         """保存项目数据"""
@@ -844,42 +977,19 @@ class DataStore:
         return data if isinstance(data, dict) else {}
 
     def _save_users(self, users, conn):
-        """保存用户数据
-
-        安全策略：users 表承载登录账号，绝不能因为一条脏数据就整表清空。
-        因此先过滤出不满足 NOT NULL 约束（缺 username / password）的记录，
-        只有在存在可写入记录时才执行 delete + insert。
-        """
-        if not isinstance(users, list):
-            return True
-
+        """管理员恢复账户时，任何一条无效记录都使整个恢复回滚。"""
         model = UserModel(self.db)
-        valid_users = []
         for user in users:
-            if not isinstance(user, dict):
-                continue
-            converted = model._convert_to_db(user)
-            if not converted.get('username') or not converted.get('password'):
-                print(
-                    f"[SQLite] 跳过不合法的用户记录（缺少 username/password）: "
-                    f"id={user.get('id')!r} username={user.get('username')!r} "
-                    f"name={user.get('name')!r}"
-                )
-                continue
-            valid_users.append(user)
-
-        if users and not valid_users:
-            # 全部不合法：宁可不同步，也不能把现有账号清空
-            print("[SQLite] 警告：所有用户记录均不合法，跳过 users 表同步以保护现有账号")
-            return False
-
+            if not user.get('username') or not user.get('password'):
+                raise ValueError('用户记录缺少 username/password')
         conn.execute("DELETE FROM users")
-        for user in valid_users:
+        for user in users:
             self._upsert('users', model._serialize(model._convert_to_db(user)), conn)
         return True
 
     def _save_config(self, config: Dict, conn):
         """保存配置数据"""
+        conn.executemany('DELETE FROM settings WHERE key = ?', [(key,) for key in CONFIG_KEYS])
         for key, value in config.items():
             if isinstance(value, (dict, list)):
                 value = json.dumps(value, ensure_ascii=False)
@@ -905,7 +1015,7 @@ class DataStore:
         for ktype, items in knowledge.items():
             if isinstance(items, list):
                 for item in items:
-                    item['type'] = ktype
+                    item = dict(item, type=ktype)
                     model = KnowledgeModel(self.db)
                     self._upsert('knowledge', model._serialize(model._convert_to_db(item)), conn)
 
@@ -953,17 +1063,17 @@ class DataStore:
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for t in templates:
-            if not isinstance(t, dict):
-                continue
-            tid = (t.get('id') or '').strip()
-            if not tid:
-                continue
+            tid = self._record_identity(t.get('id'))
             fields = t.get('fields')
+            if isinstance(fields, str):
+                fields = json.loads(fields)
+            if fields is not None and not isinstance(fields, list):
+                raise ValueError('打印模板 fields 必须是数组')
             fields_json = json.dumps(fields, ensure_ascii=False) if isinstance(fields, list) else (
                 fields if isinstance(fields, str) else '[]')
             conn.execute(
                 """
-                INSERT OR REPLACE INTO print_templates
+                INSERT INTO print_templates
                     (id, name, doc_type, background, page_width, page_height, page_size,
                      fields, project_id, cert_round, year,
                      source_path, source_ext, source_mtime, note, created_at, updated_at)
@@ -986,7 +1096,7 @@ class DataStore:
                     t.get('sourceMtime'),
                     t.get('note'),
                     t.get('createdAt') or now,
-                    now,
+                    t.get('updatedAt') or now,
                 )
             )
         return True
@@ -1007,14 +1117,6 @@ class DataStore:
 
     def _save_audit_logs(self, logs, conn):
         """保存审计日志"""
-        if not isinstance(logs, list):
-            return True
-
-        existing = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        if not logs and existing:
-            print(f"[SQLite] 本次提交的审计日志为空、库中已有 {existing} 条，跳过清空以保护审计轨迹")
-            return True
-
         conn.execute("DELETE FROM audit_logs")
         for log in logs:
             if not isinstance(log, dict):
@@ -1022,6 +1124,27 @@ class DataStore:
             model = AuditLogModel(self.db)
             self._upsert('audit_logs', model._serialize(model._convert_to_db(log)), conn)
         return True
+
+    def _save_checklists(self, checklists, conn):
+        for row in checklists:
+            self._upsert('checklists', self.checklists._serialize(
+                self.checklists._convert_to_db(row)), conn)
+
+    def _save_archive_config(self, config, conn):
+        conn.execute("DELETE FROM settings WHERE substr(key, 1, 14) = 'archiveConfig_'")
+        for key, value in config.items():
+            conn.execute(
+                'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
+                ('archiveConfig_' + key, json.dumps(value, ensure_ascii=False),
+                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            )
+
+    def _save_archive_mappings(self, mappings, conn):
+        conn.execute(
+            'INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
+            ('archiveMappings', json.dumps(mappings, ensure_ascii=False),
+             datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+        )
 
     def _save_checklist_states(self, states: Dict, conn):
         """保存清单状态"""
@@ -1054,11 +1177,12 @@ class DataStore:
     def _load_config(self) -> Dict:
         """加载配置数据（含资源中心可配置分类 resourceCategories）"""
         config = {}
-        rows = self.settings.find("key IN ('stages', 'projectTypes', 'orgTypes', 'statusList', 'financeTypes', 'incomeCategories', 'expenseCategories', 'stageMaterials', 'resourceCategories')")
+        placeholders = ','.join('?' for _ in CONFIG_KEYS)
+        rows = self.settings.find(f'key IN ({placeholders})', tuple(CONFIG_KEYS))
         for row in rows:
             key = row['key']
             value = row['value']
-            if value:
+            if value is not None:
                 try:
                     config[key] = json.loads(value)
                 except:
@@ -1080,7 +1204,7 @@ class DataStore:
         for row in rows:
             key = row['key'].replace('archiveConfig_', '')
             value = row['value']
-            if value:
+            if value is not None:
                 try:
                     config[key] = json.loads(value)
                 except:
@@ -1098,6 +1222,8 @@ class DataStore:
         """加载归档映射"""
         row = self.settings.get_by_id('archiveMappings')
         if row and row.get('value'):
+            if isinstance(row['value'], dict):
+                return row['value']
             try:
                 return json.loads(row['value'])
             except:
@@ -1109,7 +1235,7 @@ class DataStore:
         states = {}
         rows = self.checklist_states.get_all()
         for row in rows:
-            states[row['checklist_key']] = bool(row.get('checked', 0))
+            states[row['checklistKey']] = bool(row.get('checked', 0))
         return states
 
     def _load_templates(self) -> Dict:
@@ -1130,6 +1256,7 @@ class DataStore:
         categories = data.get('categories')
         items = data.get('items')
         return {
+            **data,
             'categories': categories if isinstance(categories, list) else [],
             'items': items if isinstance(items, list) else []
         }
@@ -1173,6 +1300,8 @@ class DataStore:
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            data.pop('_revisions', None)
+            data['_snapshot'] = True
             return self.save_all_data(data)
         except Exception as e:
             print(f"导入数据失败: {e}")

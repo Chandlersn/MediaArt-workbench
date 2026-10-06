@@ -101,7 +101,7 @@
 
       <div class="form-actions">
         <button type="button" class="btn-secondary" @click="$router.push('/finance')">取消</button>
-        <button type="submit" class="btn-primary" :disabled="!isValid">{{ isEdit ? '保存修改' : '保存记录' }}</button>
+        <button type="submit" class="btn-primary" :disabled="!formReady || financeStore.loading || !isValid">{{ isEdit ? '保存修改' : '保存记录' }}</button>
       </div>
     </form>
   </div>
@@ -128,6 +128,7 @@ const projectStore = useProjectStore()
 const orgStore = useOrganizationStore()
 
 const isEdit = computed(() => !!route.params.id)
+const formReady = ref(false)
 
 const today = new Date().toISOString().split('T')[0]
 
@@ -150,19 +151,24 @@ const projects = computed(() => projectStore.projects)
 const organizations = computed(() => orgStore.organizations)
 
 onMounted(async () => {
-  await projectStore.loadProjects()
-  await orgStore.loadOrganizations()
+  await Promise.all([projectStore.loadProjects(), orgStore.loadOrganizations(), financeStore.loadRecords()])
+  if (!projectStore.loaded || !orgStore.loaded || !financeStore.loaded) {
+    error('表单数据加载失败，请刷新后重试')
+    return
+  }
 
   if (isEdit.value) {
-    await financeStore.loadRecords()
     const record = financeStore.financeRecords.find(r => r.id == route.params.id)
+    if (!record) { error('财务记录不存在，请返回列表'); return }
     if (record) {
       formData.value = { ...record }
     }
   }
+  formReady.value = true
 })
 
 const handleSave = async () => {
+  if (!formReady.value || financeStore.loading) return
   const { valid, errors } = validate({
     type: [() => required(formData.value.type, '类型')],
     category: [() => required(formData.value.category, '分类')],

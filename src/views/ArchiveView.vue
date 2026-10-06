@@ -70,7 +70,6 @@ const showUploadModal = ref(false)
 const showNewFolderModal = ref(false)
 const newFolderName = ref('')
 const uploadFile = ref(null)
-const uploadFileInput = ref(null)
 // 归档上传时的「文档标题」：人工填（默认预填上传文件的原名），
 // 与主体、日期一起组成 主体_标题_日期.ext —— 这样同目录内才区分得开。
 const uploadTitle = ref('')
@@ -468,9 +467,6 @@ const exportAll = async () => {
   }
 }
 
-const triggerUploadFile = () => {
-  uploadFileInput.value?.click()
-}
 
 const handleUploadFileSelect = (e) => {
   uploadFile.value = e.target.files[0]
@@ -499,7 +495,6 @@ const submitUpload = async () => {
       showUploadModal.value = false
       uploadFile.value = null
       uploadTitle.value = ''
-      if (uploadFileInput.value) uploadFileInput.value.value = ''
       await renderBrowserContent(currentPath.value)
       fetchCategoryCounts()
     } else {
@@ -812,14 +807,7 @@ watch(searchKeyword, () => {
       </div>
       <div class="form-group">
         <label class="form-label">选择文件</label>
-        <input
-          type="file"
-          ref="uploadFileInput"
-          style="display: none;"
-          @change="handleUploadFileSelect"
-        />
-        <button class="btn-secondary" @click="triggerUploadFile">选择文件</button>
-        <span v-if="uploadFile" class="selected-file">{{ uploadFile.name }}</span>
+        <FileDropArea :file-name="uploadFile?.name" @change="handleUploadFileSelect" />
       </div>
       <template #footer>
         <button class="btn-secondary" @click="showUploadModal = false">取消</button>

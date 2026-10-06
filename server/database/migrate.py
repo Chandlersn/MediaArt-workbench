@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import shutil
+import sqlite3
 from datetime import datetime
 from typing import Dict, Optional, List
 
@@ -61,16 +62,20 @@ class DataMigrator:
             timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
             backup_name = f"{prefix}_{timestamp}"
             backup_path = os.path.join(BACKUP_DIR, backup_name)
-            os.makedirs(backup_path, exist_ok=True)
+            os.makedirs(backup_path, exist_ok=False)
 
             # 备份 JSON 文件
             if os.path.exists(JSON_FILE):
                 shutil.copy2(JSON_FILE, os.path.join(backup_path, 'workbench_data.json'))
                 print(f"已备份 JSON 文件到: {backup_path}")
 
-            # 备份数据库文件
+            # SQLite 在线备份会把已提交的 WAL 页面纳入一致快照。
             if os.path.exists(DB_FILE):
-                shutil.copy2(DB_FILE, os.path.join(backup_path, 'workbench.db'))
+                target = sqlite3.connect(os.path.join(backup_path, 'workbench.db'))
+                try:
+                    self.db.get_connection().backup(target)
+                finally:
+                    target.close()
                 print(f"已备份数据库文件到: {backup_path}")
 
             return backup_path
@@ -99,6 +104,11 @@ class DataMigrator:
             if not json_data:
                 print("错误: 无法加载 JSON 数据")
                 return False
+
+            # An export's revisions describe its original database, not the
+            # current import destination. Import is an explicit replacement.
+            json_data.pop('_revisions', None)
+            json_data['_snapshot'] = True
 
             # 保存到数据库
             print("正在将数据写入 SQLite 数据库...")
@@ -169,19 +179,24 @@ class DataMigrator:
                 print(f"错误: 备份不存在: {backup_path}")
                 return False
 
+            # 数据库通过 SQLite API 恢复，不能覆盖其他请求仍打开的文件。
+            db_backup = os.path.join(backup_path, 'workbench.db')
+            if os.path.exists(db_backup):
+                from pathlib import Path
+                source = sqlite3.connect(Path(db_backup).resolve().as_uri() + '?mode=ro', uri=True)
+                try:
+                    if source.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                        raise ValueError('备份数据库完整性校验失败')
+                    source.backup(self.db.get_connection())
+                finally:
+                    source.close()
+                print(f"✓ 已恢复数据库文件")
+
             # 恢复 JSON 文件
             json_backup = os.path.join(backup_path, 'workbench_data.json')
             if os.path.exists(json_backup):
                 shutil.copy2(json_backup, JSON_FILE)
                 print(f"✓ 已恢复 JSON 文件")
-
-            # 恢复数据库文件
-            db_backup = os.path.join(backup_path, 'workbench.db')
-            if os.path.exists(db_backup):
-                # 关闭数据库连接
-                self.db.close_connection()
-                shutil.copy2(db_backup, DB_FILE)
-                print(f"✓ 已恢复数据库文件")
 
             print("✓ 数据恢复成功!")
             return True

@@ -11,7 +11,10 @@ import tempfile
 import shutil
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# JWT 在测试收集时就会初始化；测试进程始终使用假密钥，不读取或生成业务密钥文件。
+os.environ['WORKBENCH_JWT_SECRET'] = 'mediaart-unit-tests-only-key-not-for-production-use'
 
 
 @pytest.fixture

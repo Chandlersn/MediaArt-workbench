@@ -55,7 +55,7 @@
       </div>
       <div class="form-actions">
         <button class="btn-secondary" @click="$router.push('/organizations')">取消</button>
-        <button class="btn-primary" @click="handleSave" :disabled="!formData.name">
+        <button class="btn-primary" @click="handleSave" :disabled="!formReady || orgStore.loading || !formData.name">
           {{ isEdit ? '保存修改' : '添加机构' }}
         </button>
       </div>
@@ -73,13 +73,14 @@ import CustomSelect from '../components/CustomSelect.vue'
 
 // 修复：下面用的是 warning(...)，但 Message 从未导入，校验失败时会抛
 // ReferenceError（用户看不到任何提示）。改用项目里的 useMessage 组合式函数。
-const { warning } = useMessage()
+const { warning, error } = useMessage()
 
 const route = useRoute()
 const router = useRouter()
 const orgStore = useOrganizationStore()
 
 const isEdit = computed(() => !!route.params.id)
+const formReady = ref(false)
 
 const formData = ref({
   name: '',
@@ -92,16 +93,20 @@ const formData = ref({
 })
 
 onMounted(async () => {
+  await orgStore.loadOrganizations()
+  if (!orgStore.loaded) { error('机构数据加载失败，请刷新后重试'); return }
   if (isEdit.value) {
-    await orgStore.loadOrganizations()
     const org = orgStore.organizations.find(o => o.id == route.params.id)
+    if (!org) { error('机构不存在，请返回列表'); return }
     if (org) {
       formData.value = { ...org }
     }
   }
+  formReady.value = true
 })
 
 const handleSave = async () => {
+  if (!formReady.value || orgStore.loading) return
   const { valid, errors } = validate({
     name: [() => required(formData.value.name, '机构名称')],
     type: [() => required(formData.value.type, '机构类型')],
@@ -123,6 +128,7 @@ const handleSave = async () => {
     router.push('/organizations')
   } catch (e) {
     console.error('保存机构失败:', e)
+    error(`保存失败：${e.message}`)
   }
 }
 </script>

@@ -62,14 +62,11 @@
               placeholder="选择资料类型"
               :options="orgMaterialTypes.map(mt => ({ value: mt.name, label: mt.name }))"
             />
-            <input
-              type="file"
-              ref="materialFileInput"
-              style="display: none;"
+            <FileDropArea
               accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.mp4,.avi,.mov"
+              :file-name="selectedFile?.name"
               @change="handleFileSelect"
             />
-            <button class="btn-secondary" @click="triggerFileSelect">选择文件</button>
             <button class="btn-primary" @click="uploadMaterial" :disabled="!selectedFile || !materialType">
               上传
             </button>
@@ -242,7 +239,6 @@ const goCerts = (extra = {}) => {
 const materialType = ref('')
 const uploadTitle = ref('')
 const selectedFile = ref(null)
-const materialFileInput = ref(null)
 const orgMaterialTypes = ref([])
 
 // 加载机构资料类型
@@ -324,9 +320,6 @@ watch(
 )
 
 // 资料上传相关函数
-const triggerFileSelect = () => {
-  materialFileInput.value?.click()
-}
 
 const handleFileSelect = (event) => {
   const file = event.target.files[0]
@@ -365,9 +358,6 @@ const uploadMaterial = async () => {
       materialType.value = ''
       uploadTitle.value = ''
       selectedFile.value = null
-      if (materialFileInput.value) {
-        materialFileInput.value.value = ''
-      }
     } else {
       error(`上传失败：${result.message || '未知错误'}`)
     }
@@ -406,7 +396,7 @@ const deleteMaterial = async (index) => {
       body: JSON.stringify({
         orgName: org.value.name,
         fileName: material.name,
-        materialType: material.type
+        materialType: material.type || material.materialType || ''
       })
     })
     const result = await response.json()

@@ -59,6 +59,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const knowledge = ref({ guide: [], troubleshoot: [], case: [], tip: [], reference: [] })
   const currentKnowledge = ref(null)
   const loading = ref(false)
+  const loaded = ref(false)
+  let operationQueue = Promise.resolve()
+  const enqueue = (operation) => {
+    const result = operationQueue.then(operation)
+    operationQueue = result.catch(() => {})
+    return result
+  }
+  let revision = null
   const error = ref(null)
 
   // 规整数据结构：补齐 5 类空桶，并把旧类型数据并入对应新类型
@@ -75,18 +83,55 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     return next
   }
 
-  const loadItems = async () => {
+  const readItems = async () => {
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
       await dataService.load()
       knowledge.value = normalize(dataService.getData('knowledge'))
+      revision = dataService.getRevision('knowledge')
+      loaded.value = true
+      return true
     } catch (e) {
       console.error('加载知识库失败:', e)
       error.value = e.message
+      return false
     } finally {
       loading.value = false
     }
+  }
+
+
+  const loadItems = () => enqueue(readItems)
+
+  const transaction = (operation) => enqueue(async () => {
+    await ensureLoaded()
+    const before = JSON.parse(JSON.stringify({ knowledge: knowledge.value, currentKnowledge: currentKnowledge.value }))
+    loading.value = true
+    error.value = null
+    try {
+      return await operation()
+    } catch (e) {
+      knowledge.value = before.knowledge
+      currentKnowledge.value = before.currentKnowledge
+      loaded.value = false
+      error.value = e.message
+      throw e
+    } finally {
+      loading.value = false
+    }
+  })
+
+  const ensureLoaded = async () => {
+    if (!loaded.value) await readItems()
+    if (!loaded.value) throw new Error(error.value || '数据加载失败，无法保存，请重试')
+  }
+
+  const persist = async () => {
+    dataService.setData('knowledge', knowledge.value, revision)
+    const result = await dataService.save()
+    revision = result._revisions?.knowledge ?? revision
   }
 
   // 扁平化：所有类型合并为带 kind 字段的数组，便于检索/推荐/统计
@@ -182,27 +227,37 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   const setCurrentKnowledge = (item) => { currentKnowledge.value = item }
 
-  const saveItem = async (knowledgeData) => {
+  const saveItem = (knowledgeData) => transaction(async () => {
+    await ensureLoaded()
+    knowledgeData = { ...knowledgeData }
     loading.value = true
     error.value = null
     try {
       const type = knowledgeData.type || 'guide'
+      if (!KNOWLEDGE_TYPE_ORDER.includes(type)) throw new Error('不支持的知识类型')
       const list = knowledge.value[type] || []
       const now = new Date().toISOString()
       const isNew = !knowledgeData.id
+      knowledgeData.updatedAt = now
       if (isNew) {
         knowledgeData.id = `k${Date.now()}`
         knowledgeData.createdAt = now
         list.push(knowledgeData)
       } else {
-        const index = list.findIndex(k => k.id === knowledgeData.id)
-        if (index !== -1) list[index] = { ...list[index], ...knowledgeData }
+        const oldType = KNOWLEDGE_TYPE_ORDER.find(t =>
+          knowledge.value[t].some(k => k.id === knowledgeData.id))
+        if (!oldType) throw new Error('知识条目不存在，请刷新后重试')
+        const index = knowledge.value[oldType].findIndex(k => k.id === knowledgeData.id)
+        const merged = { ...knowledge.value[oldType][index], ...knowledgeData }
+        if (oldType === type) list[index] = merged
+        else {
+          knowledge.value[oldType].splice(index, 1)
+          list.push(merged)
+        }
       }
-      knowledgeData.updatedAt = now
       knowledge.value[type] = list
 
-      dataService.setData('knowledge', knowledge.value)
-      await dataService.save()
+      await persist()
 
       try {
         const auditStore = useAuditLogStore()
@@ -224,11 +279,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     } finally {
       loading.value = false
     }
-  }
-
+  })
   const updateItem = async (id, knowledgeData) => saveItem({ ...knowledgeData, id })
 
-  const deleteItem = async (id) => {
+  const deleteItem = (id) => transaction(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
@@ -241,8 +296,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       }
       if (currentKnowledge.value?.id === id) currentKnowledge.value = null
 
-      dataService.setData('knowledge', knowledge.value)
-      await dataService.save()
+      await persist()
 
       try {
         const auditStore = useAuditLogStore()
@@ -262,12 +316,12 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     } finally {
       loading.value = false
     }
-  }
-
+  })
   return {
     knowledge,
     currentKnowledge,
     loading,
+    loaded,
     error,
     loadItems,
     getAllFlat,

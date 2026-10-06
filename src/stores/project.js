@@ -7,19 +7,49 @@ export const useProjectStore = defineStore('project', () => {
   const projects = ref([])
   const currentProject = ref(null)
   const loading = ref(false)
+  const loaded = ref(false)
+  let revision = null
   const error = ref(null)
+  let mutationQueue = Promise.resolve()
+  const mutate = operation => {
+    const result = mutationQueue.then(operation)
+    mutationQueue = result.catch(() => {})
+    return result
+  }
 
-  const loadProjects = async () => {
+  const readProjects = async () => {
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
       await dataService.load()
       projects.value = dataService.getData('projects') || []
+      revision = dataService.getRevision('projects')
+      loaded.value = true
+      return true
     } catch (e) {
       console.error('加载项目失败:', e)
       error.value = e.message
+      return false
     } finally {
       loading.value = false
+    }
+  }
+
+  const loadProjects = () => mutate(readProjects)
+
+  const ensureLoaded = async () => {
+    if (!loaded.value) await readProjects()
+    if (!loaded.value) throw new Error(error.value || '数据加载失败，无法保存，请重试')
+  }
+
+  const persist = async candidate => {
+    dataService.setData('projects', candidate, revision)
+    const result = await dataService.save()
+    revision = result._revisions?.projects ?? revision
+    projects.value = candidate
+    if (currentProject.value) {
+      currentProject.value = projects.value.find(p => p.id === currentProject.value.id) || null
     }
   }
 
@@ -32,26 +62,26 @@ export const useProjectStore = defineStore('project', () => {
     currentProject.value = project
   }
 
-  const saveProject = async (projectData) => {
+  const saveProject = projectData => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const now = new Date().toISOString()
       const isNew = !projectData.id
+      const record = { ...projectData, updatedAt: now }
+      const candidate = [...projects.value]
       if (isNew) {
-        projectData.id = `p${Date.now()}`
-        projectData.createdAt = now
-        projects.value.push(projectData)
+        record.id = `p${Date.now()}`
+        record.createdAt = now
+        candidate.push(record)
       } else {
         const index = projects.value.findIndex(p => p.id === projectData.id)
-        if (index !== -1) {
-          projects.value[index] = { ...projects.value[index], ...projectData }
-        }
+        if (index === -1) throw new Error('项目不存在，请刷新后重试')
+        candidate[index] = { ...projects.value[index], ...record }
       }
-      projectData.updatedAt = now
 
-      dataService.setData('projects', projects.value)
-      await dataService.save()
+      await persist(candidate)
 
       try {
         const auditStore = useAuditLogStore()
@@ -65,7 +95,7 @@ export const useProjectStore = defineStore('project', () => {
         console.warn('记录审计日志失败:', e)
       }
 
-      return projectData
+      return candidate.find(p => p.id === record.id)
     } catch (e) {
       console.error('保存项目失败:', e)
       error.value = e.message
@@ -73,18 +103,15 @@ export const useProjectStore = defineStore('project', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
-  const deleteProject = async (id) => {
+  const deleteProject = id => mutate(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const project = projects.value.find(p => p.id === id)
-      projects.value = projects.value.filter(p => p.id !== id)
-      if (currentProject.value?.id === id) currentProject.value = null
-
-      dataService.setData('projects', projects.value)
-      await dataService.save()
+      await persist(projects.value.filter(p => p.id !== id))
 
       try {
         const auditStore = useAuditLogStore()
@@ -104,25 +131,10 @@ export const useProjectStore = defineStore('project', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   const updateProject = async (id, projectData) => {
-    loading.value = true
-    error.value = null
-    try {
-      const index = projects.value.findIndex(p => p.id === id)
-      if (index !== -1) {
-        projects.value[index] = { ...projects.value[index], ...projectData }
-        dataService.setData('projects', projects.value)
-        await dataService.save()
-      }
-    } catch (e) {
-      console.error('更新项目失败:', e)
-      error.value = e.message
-      throw e
-    } finally {
-      loading.value = false
-    }
+    return saveProject({ ...projectData, id })
   }
 
   const getActiveProjects = () => {
@@ -142,6 +154,7 @@ export const useProjectStore = defineStore('project', () => {
     projects,
     currentProject,
     loading,
+    loaded,
     error,
     loadProjects,
     getProjectById,

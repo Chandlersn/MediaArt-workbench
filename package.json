@@ -23,11 +23,13 @@
     "format": "prettier --write \"src/**/*.{js,vue,css}\"",
     "format:check": "prettier --check \"src/**/*.{js,vue,css}\"",
     "test": "node tests/run.js",
+    "test:e2e": "npm run build && playwright test",
     "test:watch": "node tests/run.js --watch"
   },
   "author": "MediaArt Team",
   "license": "MIT",
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "concurrently": "^8.2.2",
     "electron": "^28.3.3",

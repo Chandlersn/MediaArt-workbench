@@ -364,25 +364,19 @@ function stopPythonServer() {
         serverCheckInterval = null;
     }
 
-    // 使用多种方式确保Python进程被终止
-    if (process.platform === 'win32') {
-        // 方法1：如果有pid，尝试终止该进程树
-        if (pythonProcess && pythonProcess.pid) {
-            spawn('taskkill', ['/pid', pythonProcess.pid, '/f', '/t']);
-        }
-        // 方法2：终止所有监听8080端口的进程
-        spawn('cmd', ['/c', 'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :8080 ^| findstr LISTENING\') do taskkill /f /pid %a']);
-        // 方法3：终止所有python进程（最后手段）
-        setTimeout(() => {
-            spawn('taskkill', ['/f', '/im', 'python.exe']);
-            spawn('taskkill', ['/f', '/im', 'pythonw.exe']);
-        }, 500);
-    } else {
-        if (pythonProcess) {
-            pythonProcess.kill('SIGTERM');
-        }
-    }
+    // 外部已启动的服务没有 pythonProcess；只关闭本次应用创建的存活子进程。
+    // 多个退出事件会调用此函数，先清空引用，保证只停止一次。
+    const ownedProcess = pythonProcess;
     pythonProcess = null;
+    if (!ownedProcess || !ownedProcess.pid || ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) {
+        return;
+    }
+    if (process.platform === 'win32') {
+        const killer = spawn('taskkill', ['/pid', String(ownedProcess.pid), '/f', '/t'], { windowsHide: true });
+        killer.on('error', (err) => console.error('Failed to stop Python:', err.message));
+    } else {
+        ownedProcess.kill('SIGTERM');
+    }
 }
 
 app.on('ready', async () => {

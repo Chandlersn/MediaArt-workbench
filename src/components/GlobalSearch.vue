@@ -13,7 +13,7 @@ const facets = ref({ modules: {}, types: {} })
 let timer = null
 
 // 维度筛选状态
-const ALL_MODULES = ['projects', 'players', 'organizations', 'finances', 'knowledge', 'files']
+const ALL_MODULES = ['projects', 'players', 'organizations', 'certificates', 'finances', 'knowledge', 'printLogs', 'files']
 const modules = ref([...ALL_MODULES])
 const typeFilter = ref('')
 const entityFilter = ref('')
@@ -21,8 +21,8 @@ const dateFrom = ref('')
 const dateTo = ref('')
 
 const TYPE_LABELS = {
-  projects: '项目', players: '选手', organizations: '机构',
-  finances: '财务', knowledge: '知识', files: '文件',
+  projects: '项目', players: '选手', organizations: '机构', certificates: '证书',
+  finances: '财务', knowledge: '知识', printLogs: '打印记录', files: '文件',
 }
 
 const hasAnyFilter = () =>
@@ -114,7 +114,7 @@ onUnmounted(() => {
       v-model="keyword"
       type="text"
       class="gs-input"
-      placeholder="全局搜索 项目 / 选手 / 机构 / 财务 / 知识 / 文件"
+      placeholder="全局搜索 项目 / 选手 / 机构 / 证书 / 财务 / 知识 / 打印记录 / 文件"
       @input="onInput"
       @focus="onInput"
     />

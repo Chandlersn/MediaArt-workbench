@@ -42,6 +42,7 @@ from server.database.store import data_store
 from server.archive.taxonomy import SUBDIRS, strip_seq, resolve_subdir_for_type
 from server.utils.auth_middleware import extract_user_from_request
 from server.utils.permissions import has_permission
+from server.materials.metadata import store_material_file
 from server.resources.routes import (
     _ok, _parse_multipart, _safe_under, _sanitize_filename, _compose_filename,
     get_archives_dir,
@@ -638,9 +639,8 @@ class SubmitRouter:
             subject=entity.get('name') or '', stage=entity.get('stage') or '')
 
         try:
-            os.makedirs(dest, exist_ok=True)
-            with open(os.path.join(dest, filename), 'wb') as f:
-                f.write(file_data)
+            filename = store_material_file(dest, filename, file_data, material_type,
+                                           entity.get('stage') or '')
         except Exception as e:
             logger.error(f"写入提交文件失败: {e}", exc_info=True)
             return _ok({'success': False, 'message': f'保存文件失败: {e}'}, 500)

@@ -1,0 +1,196 @@
+MediaArt Workbench 当前代码审查报告
+
+审查日期：2026 年 10 月 4 日（Asia/Shanghai）
+代码基线：e5dbadbb8998f910835ff05ef12bdef39075ea4d 的当前工作区。
+版本：package.json 声明 2.3.0。
+
+结论：当前代码存在可验证的未授权文件读取、账户接管、业务数据覆盖和恢复不完整问题。前端能够构建，现有单元测试能够通过，但不足以证明关键业务流程可靠。建议先修复下列 P1 项，再以真实业务数据验收。即使只在本机使用，新建、编辑、保存、备份恢复和退出进程等问题仍会触发。
+
+本报告只使用当前源码、配置、现有可执行测试及本次隔离复现作为依据。未读取或引用以前的审查报告、历史意见或变更记录；源码注释中的历史结论也未作为缺陷成立的证据。本次未修改业务代码，未对实际业务数据库执行写入、恢复或删除。
+
+审查覆盖 Vue 页面、Pinia Store、HTTP 与数据服务、Python 路由和鉴权、SQLite 保存及迁移、文件上传下载、Electron 启停、构建与测试脚本。src/server/electron 共计 123 个 .js/.vue/.py/.cjs/.sql 文件、38,322 行，这是范围统计，不代表每行均做了穷尽证明。重点检查跨模块调用链。
+
+共确认 15 项主要问题：P1 10 项、P2 5 项。P1 表示涉及账户/文件访问边界、数据损失、关键流程错误或影响其他进程，应优先修复；P2 表示特定条件下的功能、可用性或备份可靠性缺陷。下文区分实际源码隔离执行与静态调用链确认，不把模拟验证等同于完整浏览器或安装包验收。
+
+01  P1  静态目录直接暴露数据库和默认 JWT 签名密钥
+
+代码位置：server/config.py:77；server/main.py:73、80、219；server/utils/jwt_handler.py:58。
+
+BUSINESS_PATH_PREFIXES 明确包含 /data/，非 /api/ 请求直接进入 SimpleHTTPRequestHandler，没有身份校验或敏感文件过滤。默认密钥位于 data/.jwt_secret，数据库位于 data/workbench.db。数据库文件包含业务信息；取得当前 JWT 签名密钥后，可以伪造角色声明。设置独立的密钥环境变量可以避免该默认密钥文件的泄露，但不能解决数据库的静态暴露。
+
+隔离复现：使用真实 HTTP Handler，把 BASE_DIR 和静态根指向临时目录，仅放入假标记文件。未附带任何认证，GET /data/.jwt_secret 与 GET /data/workbench.db 均返回 200，内容为对应假标记。复现没有读取实际密钥或数据库。
+
+影响范围：main.py:219 实际绑定 ("", PORT)，即所有网络接口；网络可达范围还取决于防火墙和部署环境，不能依据“本地工作台”名称推断仅本机可访问。
+
+建议：取消整个运行数据目录的静态映射，只对确需展示的资产提供明确白名单或受控下载接口；单机场景默认绑定 127.0.0.1。修复后轮换可能暴露的密钥。
+
+02  P1  Windows 下编码反斜杠可绕过静态路径检查
+
+代码位置：server/main.py:67–77。
+
+当前检查在 URL 解码后只按正斜杠分段，拒绝独立的“..”。Windows 文件路径同时识别反斜杠，因此包含“..%5c”的路径不会被该检查识别，却会在文件打开时产生目录上跳。
+
+隔离复现：在临时资源根以外建立 private/probe.txt，不附认证请求 /resources/..%5cprivate%5cprobe.txt，真实 Handler 返回 200 和测试标记。即使单独移除 /data/ 静态前缀，该问题仍独立存在。
+
+建议：统一处理 URL 解码和路径分隔符，拒绝盘符、绝对路径等输入，并对最终解析路径做允许根目录包含校验。不要把按字符串分段判断作为最后一道边界。
+
+03  P1  查看者可以修改管理员等任意用户密码
+
+代码位置：server/users/routes.py:207–229，重点为 220、229。
+
+/api/users/change-password 仅使用 require_auth；目标用户优先取请求体 userId，而非固定取登录用户。该接口没有检查目标归属、users:edit 权限或原密码。默认查看者可以读取用户列表并取得目标 ID。
+
+隔离复现：执行真实 UsersRouter、认证装饰器和权限判断，将 JWT 身份模拟为 viewer，存储与密码散列函数替换为测试桩。viewer 的 users:edit 为 False，但指定测试管理员 ID 的改密请求返回 200，存储层收到对该管理员 password 的更新。
+
+建议：自助改密固定操作当前认证用户，并验证当前凭据；管理重置应使用独立的授权接口。对账号归属校验建立路由级回归测试。
+
+04  P1  全量保存接口可以绕过用户和其他业务模块权限
+
+代码位置：server/resources/routes.py:363–368、475–480；server/database/db.py:649–665、846–878。
+
+/api/data/save 只要求 resources:edit，随后将整个请求体交给 save_all_data。后者接受 users、config、auditLogs 等不同权限域的数据；_save_users 会清空用户表并按客户端提交的 role/password 等字段回填。默认 editor 没有 users:edit，却有 resources:edit。
+
+隔离复现：使用真实资源路由与权限判断、模拟 editor 身份和数据存储，提交含管理员角色的 users 数据。路由返回 200，并把未过滤的 users 传给保存层。实际落库能力由 _save_users 源码核对，未在真实业务库执行提权。
+
+建议：将普通业务操作改为按实体及动作授权的接口；用户、密码、角色和审计记录不应由普通全量快照接口写入。服务端必须校验实际修改内容，前端隐藏按钮不足以保护接口。
+
+05  P1  刷新新建机构或财务页面后保存会覆盖已有记录
+
+代码位置：src/views/OrganizationFormView.vue:94–102；src/views/FinanceFormView.vue:152–160；src/stores/organization.js:34–43；src/stores/finance.js:34–52；src/services/dataService.js:53–55、71–79；server/database/db.py:684–687。
+
+两个表单仅在编辑模式加载当前业务 Store。直接打开或刷新新建页后，当前业务数组初始为 []，新增只会向空数组加入新记录。setData 随后覆盖快照内该表；它还会把未加载的 _data 初始化为 {}，使 save() 的加载保护失效。服务端对提交的表执行删除再回填。
+
+财务页虽然加载项目和机构，可能已经取得完整服务快照，但没有初始化 financeRecords，仍会用“仅新记录”的数组覆盖 finances。
+
+隔离复现：使用真实 Vue/Pinia，执行当前 organization Store 与 dataService，并模拟 HTTP。冷启动新增产生的请求只有 POST，没有 GET；载荷为 {organizations:[新机构], _snapshot:true}。后端对该表删除再回填的行为另经源码和临时数据库测试确认。
+
+建议：修改前必须明确确认对应 Store 加载成功，加载失败时禁止保存；区分“有局部数据”和“完整快照已加载”。优先采用新增单条记录的服务端接口。
+
+06  P1  保存无效记录会先删除旧数据并返回成功
+
+代码位置：server/database/db.py:684–687、737–751；server/resources/routes.py:475–482。
+
+save_all_data 先 DELETE 原表，再逐条回填。_upsert 捕获约束异常后返回 False，但 _save_projects 等函数忽略单条写入结果，最外层仍可能返回 True。错误类型或中途异常也可能使已经删除的内容以残缺结果提交。
+
+临时 SQLite 复现：原有项目 {id:"p1", name:"Original"}；调用 save_all_data({projects:[{id:"p1"}]})。结果 invalid_save_success=True，remaining_projects=0。缺失必填 name 的记录被跳过，旧记录已经删除。
+
+建议：先验证整个载荷，再开始替换；任何插入失败必须让本次替换回滚。不能只在日志中警告后向界面返回保存成功。项目、机构、选手、财务、证书等同类写入函数应一起检查。
+
+相关一致性问题：db.py:698 在事务未提交时设置 PRAGMA foreign_keys=ON，隔离执行后该连接仍为 0。应恢复并验证外键状态，并避免依赖禁用约束来完成普通业务保存。
+
+07  P1  旧快照保存会覆盖其他窗口已保存的数据
+
+代码位置：src/services/dataService.js:70–79；server/database/db.py:648–695。
+
+前端提交整个内存快照，后端按表清空重建，没有修订号比较或记录级冲突检测。_version 是格式版本，不是服务端并发修订号。即使只有一个用户，同时打开两个浏览器标签页也能触发。
+
+临时 SQLite 复现：A、B 取得同一快照；A 修改项目名并保存；B 在旧快照新增机构后保存。两次保存均成功，但 A 的项目名被恢复为 Original。这个例子并不需要真正同时写库，仅先后提交陈旧数据即可发生。
+
+建议：日常编辑使用记录级更新；全量恢复采用独立操作。至少增加服务端修订号，并拒绝过期快照，不能静默采用最后一次整库覆盖。
+
+08  P1  项目和选手的编辑保存实际新增记录
+
+代码位置：src/views/ProjectFormView.vue:153–164、181；src/views/PlayerFormView.vue:135–146、167；src/stores/project.js:38–42；src/stores/player.js:39–43。
+
+编辑回填时手工挑选字段，遗漏 id；保存直接将 formData 交给 Store，没有补入路由 ID。Store 以 !data.id 判断新增，因此原记录保留，修改内容作为新实体追加。关联材料或证书等引用仍指向原记录。
+
+隔离复现：执行当前项目表单脚本和真实 Store，原始 p1/Original 编辑保存后得到两条：p1/Original、新 ID/Edited。选手存在相同代码链，已静态核对；未声称完成选手浏览器端复现。
+
+建议：编辑时保留实体 ID，或将 create 与 update(id, changes) 分开。编辑目标不存在应报错，不能回退为新增。
+
+09  P1  备份恢复报告成功却遗漏证书和配置等数据
+
+代码位置：src/views/SettingsView.vue:1103–1114；server/resources/routes.py:550–557；server/database/db.py:587–608。
+
+JSON 恢复接口只返回备份内容，不直接写库。前端先加载当前快照，然后仅恢复 projects、organizations、players、finances、knowledge、settings 六个键。certificates、certSettings、printTemplates、projectChecklists、users 等被遗漏；服务端使用的实际配置键为 config，也未恢复。
+
+隔离复现：执行原始 restoreBackup 函数并模拟 HTTP。项目从 new 恢复为 old，但证书、证书设置、打印模板、config 保持 new，随后仍显示“备份恢复成功”。导入数据函数 SettingsView.vue:1033–1038 也采用相同的有限键名单。
+
+建议：定义备份格式、完整数据范围和版本升级规则，由服务端校验后统一事务恢复；结果应说明哪些数据实际恢复。补充“导出或备份→改变各类数据→恢复→逐项比对”的测试。
+
+10  P1  Windows 退出工作台会终止不属于本应用的进程
+
+代码位置：electron/main.cjs:361–379、391–397、420–439。
+
+stopPythonServer 除了停止自身子进程，还无条件查找并强杀监听 8080 的进程，并设置延时回调按镜像名终止所有 python.exe/pythonw.exe。应用启动时可以复用已经运行的后端，但退出路径没有记录并尊重服务所有权。
+
+隔离复现：将 spawn 和定时器替换为只记录调用的函数，pythonProcess 从未初始化时调用原函数，仍记录到端口清理和两种 Python 镜像名清理。未真正执行任何杀进程命令。
+
+影响：关闭工作台可能中断另外启动的后端、其他 8080 服务或 Python 脚本。延时全杀是否实际执行取决于 Electron 退出时序；无条件端口清理不依赖这个定时器。
+
+建议：仅终止本应用创建并持有的子进程树。复用已有后端时不得在退出时停止它，删除按端口和镜像名强杀的兜底逻辑。
+
+11  P2  迁移备份直接复制 WAL 数据库主文件会漏掉已提交数据
+
+代码位置：server/database/migrate.py:58–74；server/database/db.py:63。
+
+数据库启用 WAL，但 DataMigrator.create_backup 仅 copy2 workbench.db，没有使用 SQLite 在线备份机制。尚在 WAL 中、已经提交的数据不会随主文件复制。该问题针对迁移工具的数据库备份，不是断言所有 JSON 手动备份都存在同样问题。
+
+临时 SQLite 复现：先 checkpoint，再新增并提交一条记录，随后调用原备份函数。源库 committed_row_in_live=1，复制库 committed_row_in_backup=0。
+
+建议：使用 sqlite3.Connection.backup() 创建一致快照；恢复时协调活动连接和 WAL 状态，避免直接覆盖正在使用的数据库文件。
+
+12  P2  上传到多级归档目录时父级目录被截断
+
+代码位置：server/resources/routes.py:144–148、167–171、729–735；src/views/ArchiveView.vue:485–503。
+
+前端发送完整 targetPath；后端把整个相对路径当作 _safe_under 的一个“组件”传入，内部 _safe_component 只保留最后一级。
+
+临时目录复现：向 targetPath=01_项目资料/ProjectFixture/StageFixture 上传 proof.txt，接口返回 200，但实际落在 MediaArt_Archives/StageFixture/proof.txt。界面当前目录中找不到文件，不同项目相同末级目录还会汇集到同一位置。
+
+建议：把通过验证的相对路径按层级展开，并对最终路径做根目录包含检查；增加至少三级目录的上传与回读测试。
+
+13  P2  知识库编辑时修改类型会静默丢弃修改
+
+代码位置：src/stores/knowledge.js:189–202、229；src/views/KnowledgeFormView.vue:88、97–101、138。
+
+表单允许切换类型，更新逻辑却仅在新类型桶中按 ID 查找。原条目位于旧类型桶时，查找失败既不迁移也不报错，仍保存并提示成功。
+
+隔离复现：执行真实 Knowledge Store，将 k1/guide/Original 改为 tip/Edited。保存后数据仍为 guide:[Original]、tip:[]。
+
+建议：按 ID 找到原记录后，在同一操作中完成旧桶删除和新桶插入；不存在的 ID 必须返回明确错误。
+
+14  P2  并发请求遇到 Token 刷新失败会永久挂起
+
+代码位置：src/services/http.js:66–79、186–195。
+
+首个 401 请求触发刷新，后续请求进入只有 resolve 的订阅 Promise。刷新失败直接清空 refreshSubscribers，未拒绝等待中的 Promise，其唯一完成回调已丢失。依赖这些请求的 Promise.all 或 finally 无法正常结束。
+
+隔离复现：执行当前 HTTP 模块，模拟两个请求同时返回 401，刷新请求失败。结果 refreshCalls=1，首个请求 rejected，第二个在观察窗口后仍为 PENDING_AFTER_REFRESH_FAILURE。永久性判断同时来自其回调被清空且没有其他完成路径的源码。
+
+建议：共享一个刷新 Promise，让所有请求 await 同一个成功或失败结果；或为订阅者同时保存 resolve/reject，失败时逐个拒绝。
+
+15  P2  固定证书编号模板会导致同步选手死循环
+
+代码位置：src/views/CertificatesView.vue:835–842；src/stores/certificate.js:305–308、455–458。
+
+界面与 Store 保存编号模板时未要求合法序号变量。模板为 FIXED 且启用自动编号时，第一个新证书使用该编号，第二个在 do/while 中不断增加序号，但格式化结果一直为 FIXED，重复判断永远成立。
+
+隔离复现：在具有 200 毫秒执行超时的独立 Node VM 中运行当前同步代码，使用固定模板和两名新选手，触发执行超时；源码确认循环没有退出条件或重试上限。未在用户浏览器运行该循环。
+
+建议：保存和生成时都校验 {seq} 或受支持的序号格式，并对重复编号重试设上限，失败时提供明确提示。
+
+验证结果与覆盖边界
+
+1. npm test：通过，1 个测试文件、8 项测试。当前 tests/unit/virtual-list.test.js 验证的是文件内声明的配置与算法，没有导入实际页面、Store 或数据服务，因此不能覆盖上述业务问题。
+2. Python：在临时虚拟环境安装 requirements.txt 依赖后，使用测试 JWT 密钥运行 python -m pytest -q -p no:cacheprovider，79 项全部通过。测试集中于 JWT、鉴权工具、权限矩阵、校验器和 XSS 工具，不覆盖主要保存、恢复和文件路由调用链。
+3. npm run lint:quiet：通过，退出码 0。
+4. npm run build -- --outDir .review-build-20261004：通过，145 个模块参与构建；有 notificationService 同时静态/动态导入的非阻断警告。输出使用独立目录，没有覆盖现有 dist。
+5. npm run check：失败。check:static 检查 69 个文件后通过，随后 check:params 因 scripts/check-params.mjs:35、189 仍读取不存在的根目录 server.py 而报 ENOENT。实际后端已经在 server/ 下分模块，该参数契约检查当前不可用。
+6. 单独执行 check:deadcode：失败，报告 components/SubmitLinkModal.vue 未被引用。它是否应删除属于产品范围决定，不把“未引用”直接等同于业务缺陷。
+7. Python AST 语法解析：server、scripts、tests/python 共 59 个文件通过。
+8. 临时数据库、HTTP 服务与 mock 执行证据见各问题条目。未做完整浏览器 E2E、实际 Electron 启停、安装包安装/升级、压力测试或第三方依赖漏洞扫描，因此不对这些范围作通过结论。
+
+测试基础设施还存在覆盖可信度限制：tests/run.js:72–79 不等待异步用例，beforeEach/afterEach 仅保存回调而未执行，123–124 捕获测试文件导入异常却不增加失败数，最终 190 行仅看 stats.failed。当前 8 项同步测试通过是真实结果，但该运行器不足以直接承载后续异步业务回归测试。建议使用能正确执行异步测试与钩子的测试框架，或先修复运行器。
+
+推荐修复顺序
+
+第一批：封闭静态文件访问边界，修复任意改密和快照权限绕过，移除 Electron 无所有权的进程终止逻辑。修复后测试无认证、viewer、editor、admin 各身份的路由行为。
+
+第二批：优先解决新建覆盖、编辑新增、无效载荷删除和旧快照覆盖。将普通业务写入改为增量操作；加入服务端校验、事务失败回滚及冲突检测。验证失败操作后原数据完全保留。
+
+第三批：统一备份格式和完整恢复策略，改用 SQLite 在线备份；验证证书、模板、配置、项目清单及各类实体的往返一致性。
+
+第四批：修复上传目录、知识类型迁移、刷新失败挂起和编号死循环，再修复参数检查脚本与测试运行器，并将上述实际失败场景纳入回归。
+
+报告中的缺陷均尚未修复。本次交付是代码审查及证据整理，不包含业务功能修改。

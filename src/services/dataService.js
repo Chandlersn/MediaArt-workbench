@@ -1,90 +1,77 @@
-/**
- * 数据服务层：封装后端全量 load/save 接口
- *
- * 替代 window.DataStore，提供响应式友好的数据访问接口。
- * 内部维护一份内存副本，Store 通过此服务读写数据并触发持久化。
- */
+﻿/** 业务数据快照：只提交明确修改的部分，并校验其加载时的版本。 */
 import { post, get } from './http.js'
 
-const LOAD_URL = '/api/data/load'
-const SAVE_URL = '/api/data/save'
-
-// 内存中的完整数据快照
 let _data = null
 let _loadPromise = null
+let _queue = Promise.resolve()
+const _pending = new Map()
+const clone = value => JSON.parse(JSON.stringify(value))
 
-/**
- * 加载全量数据（每次都从后端拉取最新数据）
- */
-export async function load() {
-  if (_loadPromise) return _loadPromise
-
-  _loadPromise = get(LOAD_URL).then(res => {
-    _data = res.data || res
-    _loadPromise = null
-    return _data
-  }).catch(err => {
-    _loadPromise = null
-    throw err
-  })
-
-  return _loadPromise
-}
-
-/**
- * 读取数据：传 key 取顶层字段切片，**不传 key 返回整份数据副本**。
- *
- * ⚠️ 曾经无参调用会走到 `_data?.[undefined] ?? []` → 返回空数组，
- * 导致「导出数据」「创建备份」「导出字段清单」全部拿到空数据（备份文件写成 []）。
- * 这里显式区分无参场景。
- * @param {string} [key] - 如 'finances' | 'projects' | 'organizations' | 'players'
- * @returns {Array|Object}
- */
-export function getData(key) {
-  if (key === undefined) return _data ?? {}
-  return _data?.[key] ?? []
-}
-
-/**
- * 更新内存中某个顶层字段
- * @param {string} key
- * @param {*} value
- */
-export function setData(key, value) {
-  if (!_data) _data = {}
-  _data[key] = value
-}
-
-/**
- * 将当前内存数据全量持久化到后端
- *
- * 防抹库守卫：调用方必须确保数据已加载。若尚未加载，先尝试一次安全加载；
- * 加载失败则中止保存（绝不拿空/陈旧数据覆盖服务端全量数据）。
- *
- * 提交时额外带上 `_snapshot: true`，向服务端声明「这是用户正在操作的完整快照」。
- * 服务端据此区分两种"空数组"：
- *   - 带标记 → 用户确实把某张表删空了，如实落库；
- *   - 不带标记 → 疑似异常路径的空载荷，保守跳过清空（防误删）。
- * 没有这个标记时，删掉某张表最后一条记录会被服务端挡下，刷新后又出现。
- */
-export async function save() {
-  if (!_data) {
-    try {
-      await load()
-    } catch (e) {
-      throw new Error('数据未加载，且重新加载失败，已中止保存以防覆盖服务端数据')
-    }
-  }
-  if (!_data) throw new Error('数据未加载，无法保存')
-  const result = await post(SAVE_URL, { ..._data, _snapshot: true })
-  if (!result.success) throw new Error(result.message || '保存失败')
+function enqueue(operation) {
+  const result = _queue.then(operation)
+  _queue = result.catch(() => {})
   return result
 }
 
-/**
- * 判断数据是否已加载
- */
+export async function load() {
+  if (_loadPromise) return _loadPromise
+  _loadPromise = enqueue(async () => {
+    const result = await get('/api/data/load')
+    if (result.success === false) throw new Error(result.message || '加载数据失败')
+    const data = result.data || result
+    if (!data || Array.isArray(data) || typeof data !== 'object' || !data._revisions) {
+      throw new Error('服务器未返回有效的数据版本，请重新启动服务后重试')
+    }
+    _data = data
+    return clone(_data)
+  }).finally(() => { _loadPromise = null })
+  return _loadPromise
+}
+
+export function getData(key) {
+  if (key === undefined) return clone(_data ?? {})
+  return clone(_data?.[key] ?? [])
+}
+
+/** Store 应在加载数据时保存此版本，不能在保存前取别的页面刷新后的版本。 */
+export function getRevision(key) {
+  return _data?._revisions?.[key]
+}
+
+export function setData(key, value, revision = getRevision(key)) {
+  if (!_data || typeof revision !== 'string' || !revision) {
+    throw new Error('数据尚未成功加载，请刷新后重试；本次修改尚未保存')
+  }
+  if (!Object.hasOwn(_data._revisions, key)) throw new Error(`不支持保存的数据类型：${key}`)
+  const entry = { value: clone(value), revision }
+  _pending.set(key, entry)
+}
+
+export async function save() {
+  if (!_data) throw new Error('数据尚未成功加载，已中止保存')
+  // 在调用时冻结这次修改，避免排队过程中被其他页面的修改或加载替换。
+  const batch = new Map(_pending)
+  for (const [key, entry] of batch) {
+    if (_pending.get(key) === entry) _pending.delete(key)
+  }
+  if (!batch.size) return { success: true, _revisions: { ..._data._revisions } }
+  return enqueue(async () => {
+    const payload = { _snapshot: true, _revisions: {} }
+    for (const [key, entry] of batch) {
+      payload[key] = entry.value
+      payload._revisions[key] = entry.revision
+    }
+    const result = await post('/api/data/save', payload)
+    if (!result.success) throw new Error(result.message || '保存失败，未修改服务端数据')
+    // 缓存只记录已提交的数据；值和版本一起更新，避免在途加载留下旧值配新版本。
+    for (const [key, entry] of batch) {
+      _data[key] = clone(entry.value)
+      if (result._revisions?.[key]) _data._revisions[key] = result._revisions[key]
+    }
+    return result
+  })
+}
+
 export function isLoaded() {
   return _data !== null
 }
-

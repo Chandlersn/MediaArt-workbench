@@ -12,6 +12,8 @@
 接口：
     GET    /api/print/fields          字段目录（来自数据库表列 + 中文标签）
     POST   /api/print/background      上传底图 → 返回像素尺寸 + 建议纸张
+    POST   /api/print/validate        本次证书与模板的只读打印检查
+    POST   /api/print/preview         检查后的单份排版预览（不归档）
     POST   /api/print/generate        批量生成可打印 HTML（含 N 页）
     POST   /api/print/archive         归档生成的 HTML + 写留痕
     GET    /api/print/logs            打印记录
@@ -37,8 +39,16 @@ from server.resources.routes import (
     get_archives_dir,
 )
 from server.archive.taxonomy import PRINT_ARCHIVE_DIR
+from server.print.preflight import DEFAULT_FONT_PT, inspect_batch, empty_warnings, number as layout_number
 
 logger = logging.getLogger(__name__)
+MAX_PRINT_RECORDS = 10000
+
+
+class PrintRequestError(ValueError):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
 
 # 底图存放目录。放在 data/ 下而不是 resources/：resources/ 是素材库（资源中心）
 # 的领域，打印资产混进去会被素材扫描当成杂乱文件；data/ 是运行时用户数据目录
@@ -509,8 +519,7 @@ def _field_style(f: Dict[str, Any]) -> str:
         parts.append('transform:translateX(-50%);')
     elif align == 'right':
         parts.append('transform:translateX(-100%);')
-    if f.get('fontSize'):
-        parts.append(f"font-size:{f['fontSize']}pt;")
+    parts.append(f"font-size:{f.get('fontSize', DEFAULT_FONT_PT)}pt;")
     if f.get('bold'):
         parts.append('font-weight:bold;')
     if f.get('color'):
@@ -523,7 +532,7 @@ def _field_style(f: Dict[str, Any]) -> str:
     return ''.join(parts)
 
 
-def build_html(template: Dict[str, Any], records: List[Dict[str, Any]]) -> str:
+def build_html(template: Dict[str, Any], records: List[Dict[str, Any]], preview: bool = False) -> str:
     """底图 + 字段叠加 → 一份含 N 页的可打印 HTML。"""
     spec = PAGE_SIZES.get(template.get('pageSize') or 'A4_L', PAGE_SIZES['A4_L'])
     width_mm, height_mm = spec['width_mm'], spec['height_mm']
@@ -539,7 +548,7 @@ def build_html(template: Dict[str, Any], records: List[Dict[str, Any]]) -> str:
                 continue
             inner.append(
                 f'<div class="pf" style="{_field_style(f)}">'
-                f'{_escape(_record_value(rec, col) or "")}</div>')
+                f'{_escape(_record_value(rec, col))}</div>')
         pages.append(f'<div class="page">{"".join(inner)}</div>')
 
     return (
@@ -558,14 +567,14 @@ def build_html(template: Dict[str, Any], records: List[Dict[str, Any]]) -> str:
         '.pf { position: absolute; white-space: nowrap; }\n'
         '@media print { body { background: #fff; } .no-print { display: none !important; } }\n'
         '</style>\n</head>\n<body>\n'
-        '<div class="no-print" style="padding:12px;font:13px/1.6 system-ui;'
+        + ('' if preview else '<div class="no-print" style="padding:12px;font:13px/1.6 system-ui;'
         'background:#fff8e1;color:#8a6d00;border-bottom:1px solid #ffe082;">'
         '<button onclick="window.print()" style="margin-right:12px;padding:4px 14px;'
         'cursor:pointer;border:1px solid #8a6d00;border-radius:6px;background:#fff;'
         'color:#8a6d00;">打印</button>'
         '请在打印对话框中选择「缩放 = 100%」（或「实际大小」），'
         '并关闭页眉页脚，否则位置会偏移。'
-        '</div>\n'
+        '</div>\n')
         + ''.join(pages)
         + '\n</body>\n</html>'
     )
@@ -630,6 +639,20 @@ class PrintRouter:
                     return p
                 return self.generate(request_context)
 
+            if norm == '/api/print/validate' and method == 'POST':
+                if (a := _auth(request_context)):
+                    return a
+                if (p := _perm(request_context, 'projects', 'view')):
+                    return p
+                return self.validate(request_context)
+
+            if norm == '/api/print/preview' and method == 'POST':
+                if (a := _auth(request_context)):
+                    return a
+                if (p := _perm(request_context, 'projects', 'view')):
+                    return p
+                return self.preview(request_context)
+
             if norm == '/api/print/archive' and method == 'POST':
                 if (a := _auth(request_context)):
                     return a
@@ -655,6 +678,8 @@ class PrintRouter:
             return _ok({'success': False,
                         'message': f'未处理的打印接口: {method} {norm}'}, 404)
 
+        except PrintRequestError as e:
+            return _ok({'success': False, 'message': str(e)}, e.status)
         except Exception as e:
             logger.error(f"处理打印请求失败 {method} {norm}: {e}", exc_info=True)
             return _ok({'success': False, 'message': f'服务器内部错误: {e}'}, 500)
@@ -769,52 +794,92 @@ class PrintRouter:
 
     # ---------- 生成 ----------
 
-    def generate(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+    def _read_batch(self, request_context: Dict[str, Any]):
+        """Read one consistent snapshot, shared by preflight, warnings and HTML."""
         payload = _json_body(request_context)
         if not isinstance(payload, dict):
-            return _ok({'success': False, 'message': '请求体必须是 JSON 对象'}, 400)
-
-        template_id = (payload.get('templateId') or '').strip()
-        cert_numbers = payload.get('certNumbers') or []
-        session_id = (payload.get('sessionId') or '').strip()
-
-        if not template_id:
-            return _ok({'success': False, 'message': '缺少 templateId'}, 400)
+            raise PrintRequestError('请求体必须是 JSON 对象')
+        template_id = payload.get('templateId')
+        cert_numbers = payload.get('certNumbers')
+        session_id = payload.get('sessionId', '')
+        if not isinstance(template_id, str) or not template_id.strip():
+            raise PrintRequestError('缺少有效的 templateId')
         if not isinstance(cert_numbers, list) or not cert_numbers:
-            return _ok({'success': False, 'message': '请选择要打印的证书'}, 400)
+            raise PrintRequestError('请选择要打印的证书')
+        if len(cert_numbers) > MAX_PRINT_RECORDS:
+            raise PrintRequestError(f'单次最多检查或生成 {MAX_PRINT_RECORDS} 张证书')
+        if not isinstance(session_id, str):
+            raise PrintRequestError('sessionId 必须是字符串')
+        with data_store.db.transaction():
+            template = _find_template(template_id.strip())
+            if not template:
+                raise PrintRequestError(f'打印模板不存在: {template_id}', 404)
+            records = self._load_certificates(cert_numbers, session_id)
+            columns = {_record_key(row['name']) for row in
+                       data_store.db.fetchall('PRAGMA table_info(certificates)')}
 
-        template = _find_template(template_id)
-        if not template:
-            return _ok({'success': False,
-                        'message': f'打印模板不存在: {template_id}'}, 404)
-        if not template.get('background'):
-            return _ok({'success': False, 'message': '该模板没有底图，请先上传底图'}, 400)
-        fields = template.get('fields') or []
-        if not fields:
-            return _ok({'success': False, 'message': '该模板还没有勾选任何字段'}, 400)
+        # Normalize once. The historical snake-case column and dbColumn-only
+        # format must resolve identically in preflight and the generated page.
+        template = dict(template)
+        if isinstance(template.get('fields'), list):
+            fields = []
+            for raw in template['fields']:
+                if not isinstance(raw, dict):
+                    fields.append(raw)
+                    continue
+                field = dict(raw)
+                column = field.get('column') or field.get('dbColumn') or ''
+                field['column'] = _record_key(column) if isinstance(column, str) else ''
+                for attribute in ('x', 'y', 'fontSize'):
+                    if attribute in field:
+                        numeric = layout_number(field[attribute])
+                        if numeric is not None:
+                            field[attribute] = numeric
+                if not field.get('label'):
+                    field['label'] = CERT_FIELD_LABELS.get(
+                        data_store.certificates._to_db_field(field['column']), field['column'])
+                fields.append(field)
+            template['fields'] = fields
+        return payload, template, records, columns
 
-        records = self._load_certificates(cert_numbers, session_id)
-        if not records:
-            return _ok({'success': False, 'message': '没有找到对应的证书记录'}, 404)
+    def validate(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        _payload, template, records, columns = self._read_batch(request_context)
+        return _ok(inspect_batch(template, records, columns, PAGE_SIZES))
 
-        # 取不到值必须提示，不能静默留空（本项目反复出现的"静默失效"要防）
-        warnings: List[Dict[str, Any]] = []
-        for f in fields:
-            col = f.get('column')
-            if not col:
-                continue
-            empty = sum(1 for r in records
-                        if not str(_record_value(r, col) or '').strip())
-            if empty:
-                warnings.append({'column': col,
-                                 'label': f.get('label') or col,
-                                 'count': empty})
+    def preview(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        """One checked certificate, using the print renderer without printing or archiving."""
+        payload, template, records, columns = self._read_batch(request_context)
+        index = payload.get('pageIndex', 0)
+        if type(index) is not int or not 0 <= index < len(records):
+            raise PrintRequestError('预览页码超出本次证书范围')
+        checked = inspect_batch(template, records, columns, PAGE_SIZES)
+        if payload.get('validationToken') != checked['validationToken']:
+            return _ok({'success': False, 'message': '证书或模板已变更，请重新检查后查看预览'}, 409)
+        if not checked['canGenerate']:
+            return _ok({'success': False, 'message': '请修正模板问题后再预览'}, 400)
+        record = records[index]
+        return _ok({
+            'success': True, 'html': build_html(template, [record], preview=True),
+            'page': PAGE_SIZES[template.get('pageSize') or 'A4_L'],
+            'pageIndex': index, 'itemCount': len(records),
+            'reference': {'certNumber': record.get('certNumber'), 'sessionId': record.get('sessionId') or ''},
+            'playerName': record.get('playerName') or '',
+            'validationToken': checked['validationToken'],
+        })
+
+    def generate(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
+        payload, template, records, columns = self._read_batch(request_context)
+        checked = inspect_batch(template, records, columns, PAGE_SIZES)
+        if 'validationToken' in payload and payload['validationToken'] != checked['validationToken']:
+            return _ok({'success': False, 'message': '证书或模板已变更，请重新检查后再生成'}, 409)
+        if not checked['canGenerate']:
+            return _ok({**checked, 'success': False, 'message': '打印模板存在错误，请修改模板后重新检查'}, 400)
 
         return _ok({
             'success': True,
             'html': build_html(template, records),
             'itemCount': len(records),
-            'warnings': warnings,
+            'warnings': empty_warnings(template, records),
         })
 
     @staticmethod
@@ -827,16 +892,26 @@ class PrintRouter:
         out: List[Dict[str, Any]] = []
         for item in cert_numbers:
             if isinstance(item, dict):
-                num = item.get('certNumber') or ''
-                sid = item.get('sessionId') or session_id
+                num = item.get('certNumber')
+                sid = item.get('sessionId', session_id)
+                explicit = 'sessionId' in item or bool(session_id)
             else:
-                num, sid = str(item), session_id
-            rec = index.get((num, sid))
-            if rec is None:
-                # 未指定 sessionId 时按证书号兜底取一条
-                rec = next((v for (n, _), v in index.items() if n == num), None)
-            if rec:
-                out.append(rec)
+                num, sid, explicit = item, session_id, bool(session_id)
+            if not isinstance(num, str) or not num.strip() or not isinstance(sid, str):
+                raise PrintRequestError('证书引用必须包含有效的 certNumber 和字符串 sessionId')
+            if not explicit:
+                candidates = [value for (number, _), value in index.items() if number == num]
+            elif sid in ('', 'legacy-import'):
+                # The certificate UI labels old empty sessions as legacy-import.
+                # Accept that alias only when it identifies exactly one record.
+                candidates = [index[key] for key in ((num, ''), (num, 'legacy-import')) if key in index]
+            else:
+                candidates = [index[(num, sid)]] if (num, sid) in index else []
+            if len(candidates) > 1:
+                raise PrintRequestError(f'证书编号 {num} 对应多个批次，请明确选择唯一批次后重试')
+            if not candidates:
+                raise PrintRequestError(f'证书不存在或已删除：{num}（批次：{sid or "未指定"}）', 404)
+            out.append(candidates[0])
         return out
 
     # ---------- 归档 + 留痕 ----------
@@ -858,22 +933,22 @@ class PrintRouter:
         title = payload.get('title') or (template or {}).get('name') or '打印批次'
 
         now = datetime.datetime.now()
+        log_id = str(uuid.uuid4())
         type_dir = ARCHIVE_TYPE_DIR.get(doc_type, '其他')
         rel_dir = f'{ARCHIVE_ROOT}/{type_dir}/{now.strftime("%Y-%m")}'
         rel_path = (f'{rel_dir}/'
-                    f'{_sanitize_filename(title)}_{now.strftime("%Y-%m-%d_%H-%M-%S")}.html')
+                    f'{_sanitize_filename(title)}_{now.strftime("%Y-%m-%d_%H-%M-%S")}_{log_id}.html')
 
         snapshot_path = ''
         try:
             os.makedirs(os.path.join(ARCHIVES_DIR, rel_dir), exist_ok=True)
-            with open(os.path.join(ARCHIVES_DIR, rel_path), 'w', encoding='utf-8') as f:
+            with open(os.path.join(ARCHIVES_DIR, rel_path), 'x', encoding='utf-8') as f:
                 f.write(html)
             snapshot_path = rel_path
         except Exception as e:
             # 归档失败不阻断留痕 —— 打印是用户的当务之急
             logger.error(f"归档打印件失败（不阻断留痕）: {e}")
 
-        log_id = str(uuid.uuid4())
         try:
             with data_store.db.transaction() as conn:
                 conn.execute(

@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional
 from server.database.store import data_store
 from server.utils.auth_middleware import extract_user_from_request
 from server.archive.taxonomy import ARCHIVE_TOP_DIRS
+from server.search import index
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ class SearchRouter:
         date_from = (query_params.get('dateFrom', [''])[0] or '').strip()
         date_to = (query_params.get('dateTo', [''])[0] or '').strip()
 
-        ALL_MODULES = ['projects', 'players', 'organizations', 'finances', 'knowledge', 'files']
+        ALL_MODULES = list(index.MODULE_ORDER) + ['files']
         if modules_param:
             modules = [m for m in modules_param.split(',') if m in ALL_MODULES]
             if not modules:
@@ -155,151 +156,43 @@ class SearchRouter:
         else:
             modules = ALL_MODULES
 
-        has_q = bool(q)
         results: Dict[str, List[Dict[str, Any]]] = {}
-
-        # 实体名称映射（选手归属解析：project_id / org_id → 名称）
-        proj_map = {p.get('id'): (p.get('name') or '') for p in (data_store.projects.get_all() or [])}
-        org_map = {o.get('id'): (o.get('name') or '') for o in (data_store.organizations.get_all() or [])}
-
-        def type_of(mod: str, it: Dict[str, Any], explicit_type: Optional[str] = None) -> str:
-            if explicit_type is not None:
-                return explicit_type
-            if mod == 'projects':
-                return it.get('type') or ''
-            if mod == 'players':
-                return it.get('category') or ''
-            if mod == 'organizations':
-                return it.get('type') or ''
-            if mod == 'finances':
-                return it.get('type') or it.get('category') or ''
-            if mod == 'files':
-                return it.get('category', '')
-            return ''
-
-        def entity_names(mod: str, it: Dict[str, Any]) -> List[str]:
-            if mod == 'players':
-                names = []
-                pid = it.get('project_id')
-                oid = it.get('org_id')
-                if pid and proj_map.get(pid):
-                    names.append(proj_map[pid])
-                if oid and org_map.get(oid):
-                    names.append(org_map[oid])
-                return names
-            if mod in ('projects', 'organizations'):
-                return [it.get('name', '')]
-            if mod == 'files':
-                parts = it.get('path', '').split('/')
-                if len(parts) > 1 and parts[0] in ARCHIVE_TOP_DIRS:
-                    return [parts[1]]
-                return []
-            return []
-
-        def date_of(mod: str, it: Dict[str, Any]) -> str:
-            if mod == 'files':
-                return datetime.fromtimestamp(it.get('modified', 0)).strftime('%Y-%m-%d') if it.get('modified') else ''
-            for k in ('created_at', 'updated_at', 'start_date', 'date'):
-                v = it.get(k)
-                if v:
-                    return str(v)[:10]
-            return ''
-
-        def passes(mod: str, it: Dict[str, Any], explicit_type: Optional[str] = None) -> bool:
-            if type_filter and type_filter != type_of(mod, it, explicit_type).lower():
-                return False
-            if entity:
-                ens = [e.lower() for e in entity_names(mod, it)]
-                if not any(entity.lower() in e for e in ens):
-                    return False
-            if not self._date_in_range(date_of(mod, it), date_from, date_to):
-                return False
-            return True
-
+        entity_l = entity.lower()
         PER_MODULE_CAP = 50
+        targets = [m for m in modules if m != 'files']
 
-        # 项目
-        if 'projects' in modules:
-            for p in (data_store.projects.get_all() or []):
-                if has_q and not self._match([p.get('name'), p.get('type'), p.get('manager'), p.get('description')], q):
-                    continue
-                if not passes('projects', p):
-                    continue
-                results.setdefault('projects', []).append({
-                    'id': p.get('id'), 'title': p.get('name') or '(未命名)',
-                    'sub': p.get('type') or '', 'route': f"/projects/{p.get('id')}",
-                    'category': p.get('type') or '', 'modified': 0,
-                })
-                if len(results['projects']) >= PER_MODULE_CAP:
-                    break
+        # 走 FTS5 索引：不再把实体表整表读进内存逐条匹配。
+        # 索引过期时（数据保存过）在这里一次性重建 —— 重建要落盘，必须包事务。
+        conn = data_store.db.get_connection()
+        with data_store.db.transaction(immediate=True):
+            index.ensure_fresh(conn)
+        rows = index.search(conn, q) if q else index.all_docs(conn)
 
-        # 选手
-        if 'players' in modules:
-            for p in (data_store.players.get_all() or []):
-                if has_q and not self._match([p.get('name'), p.get('category'), p.get('phone'), p.get('note'), p.get('stage')], q):
-                    continue
-                if not passes('players', p):
-                    continue
-                results.setdefault('players', []).append({
-                    'id': p.get('id'), 'title': p.get('name') or '(未命名)',
-                    'sub': p.get('category') or '', 'route': f"/players/{p.get('id')}",
-                    'category': p.get('category') or '', 'modified': 0,
-                })
-                if len(results['players']) >= PER_MODULE_CAP:
-                    break
+        for r in rows:
+            module = r.get('module')
+            if module not in targets:
+                continue
+            bucket = results.get(module)
+            if bucket is not None and len(bucket) >= PER_MODULE_CAP:
+                continue
+            category = (r.get('category') or '')
+            if type_filter and type_filter != category.lower():
+                continue
+            if entity_l and entity_l not in (r.get('entity_names') or '').lower():
+                continue
+            if not self._date_in_range(r.get('doc_date') or '', date_from, date_to):
+                continue
+            results.setdefault(module, []).append({
+                'id': r.get('doc_id'),
+                'title': r.get('display_title') or '(未命名)',
+                'sub': r.get('display_sub') or '',
+                'route': r.get('route') or '',
+                'category': category,
+                'modified': 0,
+            })
 
-        # 机构
-        if 'organizations' in modules:
-            for o in (data_store.organizations.get_all() or []):
-                if has_q and not self._match([o.get('name'), o.get('type'), o.get('contact'), o.get('phone'), o.get('note')], q):
-                    continue
-                if not passes('organizations', o):
-                    continue
-                results.setdefault('organizations', []).append({
-                    'id': o.get('id'), 'title': o.get('name') or '(未命名)',
-                    'sub': o.get('type') or '', 'route': f"/organizations/{o.get('id')}",
-                    'category': o.get('type') or '', 'modified': 0,
-                })
-                if len(results['organizations']) >= PER_MODULE_CAP:
-                    break
-
-        # 财务（无详情页，跳转到财务列表）
-        if 'finances' in modules:
-            for f in (data_store.finances.get_all() or []):
-                if has_q and not self._match([f.get('title'), f.get('category'), f.get('note'), f.get('type')], q):
-                    continue
-                if not passes('finances', f):
-                    continue
-                results.setdefault('finances', []).append({
-                    'id': f.get('id'), 'title': f.get('title') or '(无摘要)',
-                    'sub': f"{f.get('type') or ''} {f.get('category') or ''}".strip(),
-                    'route': '/finance',
-                    'category': f.get('type') or f.get('category') or '', 'modified': 0,
-                })
-                if len(results['finances']) >= PER_MODULE_CAP:
-                    break
-
-        # 知识库
-        if 'knowledge' in modules:
-            knowledge = data_store._load_knowledge()
-            for t, items in knowledge.items():
-                for it in items:
-                    if has_q:
-                        hay = [it.get('title'), it.get('description'), ' '.join(it.get('tags') or [])]
-                        hay += [str(v) for v in (it.get('fields') or {}).values() if isinstance(v, str)]
-                        if not self._match(hay, q):
-                            continue
-                    if not passes('knowledge', it, explicit_type=t):
-                        continue
-                    results.setdefault('knowledge', []).append({
-                        'id': it.get('id'), 'title': it.get('title') or '(未命名)',
-                        'sub': t, 'route': f"/knowledge/{it.get('id')}",
-                        'category': t, 'modified': 0,
-                    })
-                    if len(results['knowledge']) >= PER_MODULE_CAP:
-                        break
-
-        # 文件（归档 + 素材库）
+        # 文件（归档 + 素材库）保持实时扫描：文件系统变化不受快照保存控制，
+        # 建索引会失真（用户在资源管理器里拖个文件进来，索引就过期了）。
         if 'files' in modules:
             files = self._collect_files(q, type_filter, entity, date_from, date_to)
             if files:

@@ -15,12 +15,31 @@ from server.utils.auth_middleware import require_auth, require_permission
 
 logger = logging.getLogger(__name__)
 
+# 原生图标依赖 Windows Shell 与可选 Pillow；缺失时仍提供可直接用于 <img> 的图标。
+_FALLBACK_ICON_PATHS = {
+    'folder': (
+        '<path fill="#e7a827" d="M4 12a4 4 0 0 1 4-4h11l5 5h16a4 4 0 0 1 4 4v19'
+        'a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z"/>'
+        '<path fill="#ffd166" d="M4 20a4 4 0 0 1 4-4h32a4 4 0 0 1 4 4v16'
+        'a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z"/>'
+    ),
+    'file': (
+        '<path fill="#f1f5f9" stroke="#64748b" stroke-width="2" stroke-linejoin="round" '
+        'd="M11 4h17l10 10v30H11z"/>'
+        '<path fill="#cbd5e1" stroke="#64748b" stroke-width="2" stroke-linejoin="round" '
+        'd="M28 4v10h10"/>'
+        '<path stroke="#94a3b8" stroke-width="2" stroke-linecap="round" '
+        'd="M18 23h13M18 29h13M18 35h9"/>'
+    ),
+}
+
 # 归档根目录：与 resources / materials 走同一套解析 —— 优先 config.json 的 archivePath，
 # 否则退回 BASE_DIR/MediaArt_Archives。
 # ⚠️ 此前这里是 os.path.join(BASE_DIR, 'MediaArt_Archives')，绕过了配置：用户在设置里
 # 改了归档目录后，归档管理页仍然读写默认目录（而资源中心走的是配置），两边会不一致。
 from server.resources.routes import get_archives_dir
 from server.utils.trash import send_to_trash
+from server.materials.metadata import move_metadata
 ARCHIVE_DIR = get_archives_dir()
 
 
@@ -215,6 +234,11 @@ class ArchiveRouter:
                     'headers': {'Content-Type': 'application/json'}
                 }
             os.rename(old_full, new_full)
+            try:
+                move_metadata(old_full, new_full)
+            except Exception:
+                os.rename(new_full, old_full)
+                raise
             return {
                 'status': 200,
                 'body': {'success': True, 'message': 'File renamed', 'newName': safe_name},
@@ -229,14 +253,16 @@ class ArchiveRouter:
 
     def _get_full_path(self, rel_path: str) -> str:
         """Get full path from relative path, ensuring it's within archive dir."""
-        # Normalize path
-        rel_path = rel_path.strip('/').strip('\\')
-        full_path = os.path.normpath(os.path.join(ARCHIVE_DIR, rel_path))
-
-        # Security check: ensure path is within archive directory
-        if not full_path.startswith(os.path.normpath(ARCHIVE_DIR)):
+        rel_path = rel_path.replace('\\', '/').strip('/')
+        root = os.path.realpath(ARCHIVE_DIR)
+        full_path = os.path.abspath(os.path.join(root, rel_path))
+        resolved = os.path.realpath(full_path)
+        try:
+            contained = os.path.commonpath([root, resolved]) == root
+        except ValueError:
+            contained = False
+        if not contained:
             raise ValueError('Invalid path: path traversal detected')
-
         return full_path
 
     @require_permission('resources', 'view')
@@ -317,34 +343,37 @@ class ArchiveRouter:
         except (ValueError, IndexError):
             size = 48
 
+        png_data = None
         try:
             if icon_type == 'folder':
                 png_data = get_folder_icon(size)
             else:
                 png_data = get_file_icon(ext, size)
-
-            if png_data:
-                return {
-                    'status': 200,
-                    'body': png_data,
-                    'headers': {
-                        'Content-Type': 'image/png',
-                        'Cache-Control': 'public, max-age=86400',
-                    }
-                }
-            else:
-                return {
-                    'status': 404,
-                    'body': json.dumps({'error': 'Icon not found'}).encode('utf-8'),
-                    'headers': {'Content-Type': 'application/json'}
-                }
         except Exception as e:
-            logger.error(f"Error getting file icon: {e}")
+            logger.warning(f"Native icon unavailable, using built-in icon: {e}")
+
+        if png_data:
             return {
-                'status': 500,
-                'body': json.dumps({'error': str(e)}).encode('utf-8'),
-                'headers': {'Content-Type': 'application/json'}
+                'status': 200,
+                'body': png_data,
+                'headers': {
+                    'Content-Type': 'image/png',
+                    'Cache-Control': 'public, max-age=86400',
+                }
             }
+
+        paths = _FALLBACK_ICON_PATHS['folder' if icon_type == 'folder' else 'file']
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+               f'viewBox="0 0 48 48">{paths}</svg>')
+        return {
+            'status': 200,
+            'body': svg.encode('utf-8'),
+            'headers': {
+                'Content-Type': 'image/svg+xml; charset=utf-8',
+                'Cache-Control': 'public, max-age=300',
+                'X-Content-Type-Options': 'nosniff',
+            }
+        }
 
     @require_permission('resources', 'view')
     def list_archives(self, request_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -450,11 +479,13 @@ class ArchiveRouter:
                     'headers': {'Content-Type': 'application/json'}
                 }
 
-            os.remove(full_path)
+            rid = send_to_trash(full_path)
+            if not rid:
+                raise OSError('文件未能移入回收站')
 
             return {
                 'status': 200,
-                'body': {'success': True, 'message': 'File deleted'},
+                'body': {'success': True, 'message': '文件已移入回收站', 'trash_id': rid},
                 'headers': {'Content-Type': 'application/json'}
             }
         except Exception as e:
@@ -482,10 +513,12 @@ class ArchiveRouter:
                 }
 
             rid = send_to_trash(full_path)
+            if not rid:
+                raise OSError('文件夹未能移入回收站')
             return {
                 'status': 200,
                 'body': {'success': True,
-                         'message': '文件夹已移入回收站' if rid else '文件夹已删除',
+                         'message': '文件夹已移入回收站',
                          'trash_id': rid},
                 'headers': {'Content-Type': 'application/json'}
             }
@@ -623,12 +656,20 @@ class ArchiveRouter:
         data = json.loads(body) if body else {}
         old_path = data.get('oldPath', '')
         new_path = data.get('newPath', '')
+        if (not isinstance(new_path, str) or not new_path or new_path in ('.', '..')
+                or new_path != new_path.strip().rstrip('.')
+                or any(c in new_path for c in '/\\:<>"|?*')
+                or any(ord(c) < 32 for c in new_path)):
+            return {'status': 400, 'body': {'success': False, 'message': '非法的文件夹名'},
+                    'headers': {'Content-Type': 'application/json'}}
 
         try:
             old_full = self._get_full_path(old_path)
+            if os.path.normcase(old_full) == os.path.normcase(os.path.realpath(ARCHIVE_DIR)):
+                raise ValueError('Cannot rename the archive root')
             # newPath is just the new name, construct full path
             parent_dir = os.path.dirname(old_full)
-            new_full = os.path.join(parent_dir, new_path)
+            new_full = self._get_full_path(os.path.relpath(os.path.join(parent_dir, new_path), ARCHIVE_DIR))
 
             if not os.path.exists(old_full):
                 return {
@@ -645,6 +686,11 @@ class ArchiveRouter:
                 }
 
             os.rename(old_full, new_full)
+            try:
+                move_metadata(old_full, new_full)
+            except Exception:
+                os.rename(new_full, old_full)
+                raise
 
             return {
                 'status': 200,

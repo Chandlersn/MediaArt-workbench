@@ -21,6 +21,18 @@ const DEFAULT_SETTINGS = () => ({
 })
 
 const LEGACY_SESSION = 'legacy-import'
+const SESSION_STORAGE_KEY = 'workbench_certificate_session'
+
+// 当前查看批次属于本标签页的浏览偏好，不应要求写入证书权限。
+const readSessionSelection = () => {
+  try { return sessionStorage.getItem(SESSION_STORAGE_KEY) || '' } catch { return '' }
+}
+const rememberSessionSelection = (id) => {
+  try {
+    if (id) sessionStorage.setItem(SESSION_STORAGE_KEY, id)
+    else sessionStorage.removeItem(SESSION_STORAGE_KEY)
+  } catch { /* 浏览器禁止存储时仍可在当前页面切换 */ }
+}
 
 const normalizeSettings = (s) => {
   const base = DEFAULT_SETTINGS()
@@ -47,6 +59,16 @@ const isNational = (round) => {
   return r === '全国展演' || r.includes('国赛') || r.includes('全国展演')
 }
 
+const validateNumberTemplate = (template) => {
+  if (typeof template !== 'string' || !/\{seq(?::\d+)?\}/.test(template)) {
+    throw new Error('编号模板必须包含 {seq} 或 {seq:N} 序号变量')
+  }
+  for (const match of template.matchAll(/\{seq:(\d+)\}/g)) {
+    const width = Number(match[1])
+    if (width < 1 || width > 20) throw new Error('序号补零位数必须在 1 到 20 之间')
+  }
+}
+
 /** 把编号模板渲染为字符串：{province}{code}{year}{seq}{seq:N} */
 const renderTemplate = (tpl, vars) => {
   return String(tpl).replace(/\{(\w+)(?::(\d+))?\}/g, (m, name, pad) => {
@@ -64,8 +86,16 @@ const renderTemplate = (tpl, vars) => {
 export const useCertificateStore = defineStore('certificate', () => {
   const certificates = ref([])          // 全量（跨会话）
   const certSettings = ref(normalizeSettings(null))
-  const activeSessionId = ref('')
+  const activeSessionId = ref(readSessionSelection())
   const loading = ref(false)
+  const loaded = ref(false)
+  let operationQueue = Promise.resolve()
+  const enqueue = (operation) => {
+    const result = operationQueue.then(operation)
+    operationQueue = result.catch(() => {})
+    return result
+  }
+  let revisions = {}
   const error = ref(null)
   const lastImport = ref(null)
 
@@ -104,7 +134,15 @@ export const useCertificateStore = defineStore('certificate', () => {
   const templates = computed(() => certSettings.value.templates)
   const defaults = computed(() => certSettings.value.defaults)
 
-  const loadCertificates = async () => {
+  const selectAvailableSession = () => {
+    const ids = sessions.value.map(s => s.id)
+    const preferred = [activeSessionId.value, certSettings.value.activeSessionId]
+    activeSessionId.value = preferred.find(id => id && ids.includes(id)) || ids[0] || ''
+    rememberSessionSelection(activeSessionId.value)
+  }
+
+  const readCertificates = async () => {
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
@@ -113,16 +151,53 @@ export const useCertificateStore = defineStore('certificate', () => {
       // 旧数据（无 sessionId）统一归入 legacy 会话，保证可见、可切换
       certificates.value = raw.map(c => ({ ...c, sessionId: c.sessionId || LEGACY_SESSION }))
       certSettings.value = normalizeSettings(dataService.getData('certSettings'))
-      const ids = sessions.value.map(s => s.id)
-      const aid = certSettings.value.activeSessionId || ''
-      activeSessionId.value = (aid && ids.includes(aid)) ? aid : (ids[0] || '')
-      certSettings.value.activeSessionId = activeSessionId.value
+      selectAvailableSession()
+      revisions = { certificates: dataService.getRevision('certificates'), certSettings: dataService.getRevision('certSettings') }
+      loaded.value = true
+      return true
     } catch (e) {
       console.error('加载证书失败:', e)
       error.value = e.message
+      return false
     } finally {
       loading.value = false
     }
+  }
+
+  const loadCertificates = () => enqueue(readCertificates)
+
+  const transaction = (operation) => enqueue(async () => {
+    await ensureLoaded()
+    const before = JSON.parse(JSON.stringify({ certificates: certificates.value, certSettings: certSettings.value, activeSessionId: activeSessionId.value, lastImport: lastImport.value }))
+    loading.value = true
+    error.value = null
+    try {
+      const result = await operation()
+      selectAvailableSession()
+      return result
+    } catch (e) {
+      certificates.value = before.certificates
+      certSettings.value = before.certSettings
+      activeSessionId.value = before.activeSessionId
+      lastImport.value = before.lastImport
+      loaded.value = false
+      error.value = e.message
+      throw e
+    } finally {
+      loading.value = false
+    }
+  })
+
+  const ensureLoaded = async () => {
+    if (!loaded.value) await readCertificates()
+    if (!loaded.value) throw new Error(error.value || '证书数据加载失败，无法保存，请重试')
+  }
+
+  const persistSections = async (keys) => {
+    const values = { certificates: certificates.value, certSettings: certSettings.value }
+    for (const key of keys) dataService.setData(key, values[key], revisions[key])
+    const result = await dataService.save()
+    for (const key of keys) revisions[key] = result._revisions?.[key] ?? revisions[key]
   }
 
   const getCertById = (certNumber, sessionId) => {
@@ -207,13 +282,12 @@ export const useCertificateStore = defineStore('certificate', () => {
 
   // 全量持久化（证书 + 编号规则/会话设置）
   const persistAll = async () => {
-    dataService.setData('certificates', certificates.value)
-    dataService.setData('certSettings', certSettings.value)
-    await dataService.save()
+    await persistSections(['certificates', 'certSettings'])
   }
 
   // 导入：每次导入 = 一个新会话，互不合并；切换/删除会话由用户控制
-  const importCertificates = async (list, importMeta = {}) => {
+  const importCertificates = (list, importMeta = {}) => transaction(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
@@ -222,6 +296,7 @@ export const useCertificateStore = defineStore('certificate', () => {
       const rows = (Array.isArray(list) ? list : [])
         .filter(r => r && r.certNumber)
         .map(r => ({ ...r, sessionId }))
+      if (!rows.length) throw new Error('没有可导入的有效证书，请检查台账中的证书编号')
       certificates.value = certificates.value.concat(rows)
       certSettings.value.sessionMeta = {
         ...certSettings.value.sessionMeta,
@@ -255,22 +330,18 @@ export const useCertificateStore = defineStore('certificate', () => {
     } finally {
       loading.value = false
     }
-  }
-
+  })
   // 切换会话（仅改变可视范围，不触达数据）
-  const switchSession = async (id) => {
+  const switchSession = (id) => enqueue(async () => {
+    await ensureLoaded()
     if (!id) return
+    if (!sessions.value.some(session => session.id === id)) throw new Error('该证书批次已不存在，请刷新后重试')
     activeSessionId.value = id
-    certSettings.value.activeSessionId = id
-    try {
-      await persistAll()
-    } catch (e) {
-      console.error('切换会话失败:', e)
-    }
-  }
-
+    rememberSessionSelection(id)
+  })
   // 删除会话：仅抹除该会话下的证书，其余会话不受影响
-  const deleteSession = async (id) => {
+  const deleteSession = (id) => transaction(async () => {
+    await ensureLoaded()
     if (!id) return 0
     loading.value = true
     try {
@@ -294,22 +365,25 @@ export const useCertificateStore = defineStore('certificate', () => {
     } finally {
       loading.value = false
     }
-  }
-
+  })
   // 保存编号规则 / 默认值（持久化到后端 certSettings）
-  const saveSettings = async () => {
-    dataService.setData('certSettings', certSettings.value)
-    await dataService.save()
-  }
-
-  const updateTemplateSettings = async (patch) => {
-    if (patch.templates) certSettings.value.templates = { ...certSettings.value.templates, ...patch.templates }
+  const saveSettings = () => transaction(async () => {
+    await ensureLoaded()
+    await persistSections(['certSettings'])
+  })
+  const updateTemplateSettings = (patch) => transaction(async () => {
+    await ensureLoaded()
+    if (patch.templates) {
+      const templates = { ...certSettings.value.templates, ...patch.templates }
+      Object.values(templates).forEach(validateNumberTemplate)
+      certSettings.value.templates = templates
+    }
     if (patch.defaults) certSettings.value.defaults = { ...certSettings.value.defaults, ...patch.defaults }
-    await saveSettings()
-  }
-
+    await persistSections(['certSettings'])
+  })
   // 单条 upsert（手动修正）
-  const saveCert = async (certData) => {
+  const saveCert = (certData) => transaction(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
@@ -323,8 +397,7 @@ export const useCertificateStore = defineStore('certificate', () => {
         merged.createdAt = merged.createdAt || now
         certificates.value.push(merged)
       }
-      dataService.setData('certificates', certificates.value)
-      await dataService.save()
+      await persistSections(['certificates'])
       return merged
     } catch (e) {
       console.error('保存证书失败:', e)
@@ -333,28 +406,72 @@ export const useCertificateStore = defineStore('certificate', () => {
     } finally {
       loading.value = false
     }
-  }
-
-  const updateCert = async (certNumber, patch, sessionId) => {
+  })
+  const updateCert = (certNumber, patch, sessionId) => transaction(async () => {
+    await ensureLoaded()
     const sid = sessionId || activeSessionId.value || LEGACY_SESSION
     const idx = certificates.value.findIndex(c => c.certNumber === certNumber && (c.sessionId || LEGACY_SESSION) === sid)
     if (idx < 0) return null
     const merged = { ...certificates.value[idx], ...patch, sessionId: sid, updatedAt: new Date().toISOString() }
     certificates.value[idx] = merged
-    dataService.setData('certificates', certificates.value)
-    await dataService.save()
+    await persistSections(['certificates'])
     return merged
-  }
-
-  const deleteCert = async (certNumber, sessionId) => {
+  })
+  const deleteCert = (certNumber, sessionId) => transaction(async () => {
+    await ensureLoaded()
     const sid = sessionId || activeSessionId.value || LEGACY_SESSION
     certificates.value = certificates.value.filter(c =>
       !((c.certNumber === certNumber) && ((c.sessionId || LEGACY_SESSION) === sid)))
-    dataService.setData('certificates', certificates.value)
-    await dataService.save()
-  }
+    await persistSections(['certificates'])
+  })
 
-  // ===== 自动关联：由已有「选手 / 机构」数据生成证书（每次同步 = 一个新会话） =====
+  /**
+   * 与视图层的 certKey 保持一致的键构造（certNumber + sessionId，sessionId 为空则用空串）。
+   * 两边必须一致，否则「勾选」与「批量操作」会对不上。
+   */
+  const refKey = (certNumber, sessionId) =>
+    JSON.stringify([String(certNumber ?? ''), sessionId || ''])
+
+  /**
+   * 批量删除证书（只持久化一次，不是逐条循环）。
+   * @param refs [{ certNumber, sessionId }]
+   * @return 实际删除的条数
+   */
+  const deleteCerts = (refs) => transaction(async () => {
+    const keys = new Set((refs || []).map(r => refKey(r.certNumber, r.sessionId)))
+    if (!keys.size) return 0
+    const before = certificates.value.length
+    certificates.value = certificates.value.filter(c => !keys.has(refKey(c.certNumber, c.sessionId)))
+    const removed = before - certificates.value.length
+    if (removed) await persistSections(['certificates'])
+    return removed
+  })
+
+  /**
+   * 批量修改证书字段（只持久化一次）。
+   * @param refs [{ certNumber, sessionId }]
+   * @param patch 要写入的字段，如 { award: '金奖' }
+   * @return 实际修改的条数
+   */
+  const patchCerts = (refs, patch) => transaction(async () => {
+    const keys = new Set((refs || []).map(r => refKey(r.certNumber, r.sessionId)))
+    const fields = Object.keys(patch || {})
+    if (!keys.size || !fields.length) return 0
+    let changed = 0
+    certificates.value = certificates.value.map(c => {
+      if (!keys.has(refKey(c.certNumber, c.sessionId))) return c
+      changed += 1
+      const next = { ...c, ...patch }
+      // 作品名称有联动字段：空值标记要同步，否则缺料检测会失真
+      if ('workName' in patch) {
+        next.missingWorkName = String(patch.workName ?? '').trim() ? 0 : 1
+      }
+      return next
+    })
+    if (changed) await persistSections(['certificates'])
+    return changed
+  })
+  // ===== 自动关联：新增证书归入新会话，已有证书在原会话内更新 =====
 
   /**
    * 依据当前已有证书，计算某赛事阶段的下一个序号
@@ -401,18 +518,22 @@ export const useCertificateStore = defineStore('certificate', () => {
   /**
    * 从选手库同步生成证书（自动关联的核心）
    * 沿用已有实体信息；已存在的「选手+赛事阶段」只刷新身份字段。
-   * 本次同步整体归入一个新会话，便于切换/回滚。
+   * 只有新增证书时才创建新会话；已有证书保留编号、手工字段及原会话。
    *
    * @param {Array} playerList 选手数据
    * @param {Array} orgList 机构数据
    * @param {object} opts { projectId, certRound, assignNumbers, province, code, year }
    * @returns {Promise<{created:number, updated:number, skipped:number}>}
    */
-  const syncFromPlayers = async (playerList = [], orgList = [], opts = {}) => {
+  const syncFromPlayers = (playerList = [], orgList = [], opts = {}) => transaction(async () => {
+    await ensureLoaded()
     loading.value = true
     error.value = null
     try {
       const round = opts.certRound || '省级展演'
+      if (opts.assignNumbers) {
+        validateNumberTemplate(isNational(round) ? certSettings.value.templates.national : certSettings.value.templates.province)
+      }
       const projectId = opts.projectId || ''
       const genOpts = {
         province: opts.province ?? certSettings.value.defaults.province,
@@ -433,6 +554,7 @@ export const useCertificateStore = defineStore('certificate', () => {
       let skipped = 0
       const now = new Date().toISOString()
       const additions = []
+      const updatedSessions = new Set()
       const sessionId = genSessionId()
       const sessionName = `从选手同步 · ${round}`
 
@@ -445,15 +567,21 @@ export const useCertificateStore = defineStore('certificate', () => {
           existing.orgId = p.orgId || existing.orgId
           existing.groupName = p.category || existing.groupName
           existing.receivingOrg = existing.receivingOrg || orgName
-          existing.projectId = existing.projectId || projectId
+          existing.projectId = existing.projectId || p.projectId || projectId
           existing.updatedAt = now
+          updatedSessions.add(existing.sessionId || LEGACY_SESSION)
           updated++
           continue
         }
         if (!opts.assignNumbers) { skipped++; continue }
         let certNumber = ''
+        let attempts = 0
         do {
           seq++
+          attempts++
+          if (!Number.isSafeInteger(seq) || attempts > used.size + 1) {
+            throw new Error('无法生成唯一证书编号，请检查编号模板和已有编号')
+          }
           certNumber = formatCertNumber(round, seq, genOpts)
         } while (used.has(certNumber))
         used.add(certNumber)
@@ -461,7 +589,7 @@ export const useCertificateStore = defineStore('certificate', () => {
         additions.push({
           certNumber,
           sessionId,
-          projectId,
+          projectId: p.projectId || projectId,
           orgId: p.orgId || '',
           orgName,
           playerId: p.id,
@@ -485,22 +613,29 @@ export const useCertificateStore = defineStore('certificate', () => {
         created++
       }
 
-      certificates.value = pool.concat(additions)
-      certSettings.value.sessionMeta = {
-        ...certSettings.value.sessionMeta,
-        [sessionId]: { name: sessionName, createdAt: now, kind: 'sync' }
+      if (!created && !updated) return { created, updated, skipped }
+      if (created) {
+        certificates.value = pool.concat(additions)
+        certSettings.value.sessionMeta = {
+          ...certSettings.value.sessionMeta,
+          [sessionId]: { name: sessionName, createdAt: now, kind: 'sync' }
+        }
+        certSettings.value.activeSessionId = sessionId
+        activeSessionId.value = sessionId
+        await persistAll()
+      } else {
+        // 纯更新不建立空批次；当前批次不在更新范围时展示首个有更新的批次。
+        if (!updatedSessions.has(activeSessionId.value)) activeSessionId.value = updatedSessions.values().next().value
+        await persistSections(['certificates'])
       }
-      certSettings.value.activeSessionId = sessionId
-      activeSessionId.value = sessionId
-      await persistAll()
 
       try {
         const auditStore = useAuditLogStore()
         await auditStore.addLog({
           action: 'sync_certificates_from_players',
-          actionType: 'create',
+          actionType: created ? 'create' : 'update',
           target: '证书',
-          description: `从选手库同步证书：新增 ${created} 条、更新 ${updated} 条（赛事阶段：${round}；会话：${sessionName}）`
+          description: `从选手库同步证书：新增 ${created} 条、更新 ${updated} 条（赛事阶段：${round}；${created ? `新增会话：${sessionName}` : '更新原会话'}）`
         })
       } catch (e) {
         console.warn('记录审计日志失败:', e)
@@ -514,8 +649,7 @@ export const useCertificateStore = defineStore('certificate', () => {
     } finally {
       loading.value = false
     }
-  }
-
+  })
   return {
     certificates,
     certSettings,
@@ -525,6 +659,7 @@ export const useCertificateStore = defineStore('certificate', () => {
     templates,
     defaults,
     loading,
+    loaded,
     error,
     lastImport,
     loadCertificates,
@@ -542,6 +677,8 @@ export const useCertificateStore = defineStore('certificate', () => {
     nextSequence,
     saveCert,
     updateCert,
-    deleteCert
+    deleteCert,
+    deleteCerts,
+    patchCerts
   }
 })
